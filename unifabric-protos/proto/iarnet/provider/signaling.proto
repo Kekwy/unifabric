@@ -1,0 +1,102 @@
+syntax = "proto3";
+
+package iarnet.provider;
+
+import "iarnet/actor/actor.proto";
+
+option java_package = "com.kekwy.unifabric.proto.provider";
+option java_multiple_files = true;
+
+
+
+
+// ======================== 信令通道消息 ========================
+
+message SignalingEnvelope {
+  string provider_id    = 1;
+
+  // 发送时间（毫秒时间戳）
+  int64  timestamp_ms = 2;
+
+  oneof payload {
+    ConnectInstruction connect_instruction = 10;
+    IceEnvelope        ice_envelope        = 11;
+    CandidateUpdate    candidate_update    = 12;
+    ActorChannelStatus actor_channel       = 13;
+    ActorReadyReport actor_ready = 14;
+    ActorMessageForward actor_message_forward = 15;
+  }
+}
+
+message ActorMessageForward {
+  string target = 1; // 目标 actor id（由 Router 填写物理地址）
+  actor.ActorEnvelope actor_envelope = 2;
+}
+
+message ActorReadyReport {
+  string actor_id = 1;
+}
+
+// 由 Provider 上报某条 Actor 间通道的状态
+message ActorChannelStatus {
+  string workflow_id     = 1;
+  string application_id  = 2;
+  string src_actor_addr  = 3;
+  string dst_actor_addr  = 4;
+  bool   connected       = 5; // true 表示该方向的通道已建立
+}
+
+// 控制平面下发的“建立连接”指令。
+message ConnectInstruction {
+  // 本次连接协商的唯一标识，用于在多次重试/候选交换中进行关联。
+  string connect_id = 1;
+
+  // 源 Actor 与目标 Actor 的虚拟地址（逻辑标识）
+  string src_actor_addr = 2;
+  string dst_actor_addr = 3;
+
+  // 连接角色：true 表示本设备作为“主动发起方”（caller），false 为“被动应答方”（callee）。
+  bool   initiator      = 4;
+}
+
+// ICE 信令包，通过控制平面在 Provider 之间中转。
+message IceEnvelope {
+  string connect_id    = 1;
+
+  // 源 Provider / 目标 Provider
+  string from_provider_id = 2;
+  string to_provider_id   = 3;
+
+  // 信令类型（例如: "offer" / "answer" / "candidate" / 自定义）
+  string signal_type    = 5;
+
+  // 具体信令负载（SDP / candidate JSON / 自定义编码）
+  bytes  signal_payload = 6;
+}
+
+// Provider 上报本机可用的网络候选信息（可选，用于控制平面构建全局视图）。
+message CandidateUpdate {
+  string provider_id = 1;
+
+  repeated NetworkCandidate candidates = 2;
+}
+
+// 简化版网络候选，后续可扩展 STUN/TURN/优先级等字段。
+message NetworkCandidate {
+  enum CandidateType {
+    CANDIDATE_TYPE_UNSPECIFIED = 0;
+    DIRECT                     = 1; // 局域网直连地址
+    NAT_MAPPED                 = 2; // NAT 映射地址（经 STUN 探测）
+    RELAY                      = 3; // 中继地址（TURN / 中转服务器）
+  }
+
+  CandidateType type = 1;
+
+  // 网络层地址信息
+  string host = 2;
+  int32  port = 3;
+
+  // 候选优先级，越大越优先
+  int32  priority = 4;
+}
+

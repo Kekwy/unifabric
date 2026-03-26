@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package iarnet.common;
+
+option java_package = "com.kekwy.unifabric.proto.common";
+option java_multiple_files = true;
+
+// ======================== 资源配额 ========================
+
+message ResourceSpec {
+  double cpu    = 1;
+  string memory = 2;
+  double gpu    = 3;
+}

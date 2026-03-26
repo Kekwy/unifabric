@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package iarnet.common;
+
+import "iarnet/common/type.proto";
+
+option java_package = "com.kekwy.unifabric.proto.common";
+option java_multiple_files = true;
+
+// ======================== 语言标识 ========================
+
+enum Lang {
+  LANG_UNSPECIFIED = 0;
+  LANG_JAVA        = 1;
+  LANG_PYTHON      = 2;
+  LANG_GO          = 3;
+}
+
+// ======================== 函数描述（语言无关） ========================
+
+message FunctionDescriptor {
+  Lang lang = 1;
+
+  repeated Type inputs_type  = 2;
+  Type     output_type = 3;
+
+  // 函数定位标识
+  // Java:   完整类名，如 "com.example.MyMapper"
+  // Python: "模块:函数名"，如 "transforms:to_upper"
+  string function_identifier = 4;
+
+  // 序列化的函数体（可选）
+  // Java:   java.io.Serializable 序列化字节
+  // Python: pickle / cloudpickle 序列化字节
+  // 后端优先使用此字段还原函数；若为空则通过 identifier + artifact 加载
+  bytes serialized_function = 5;
+}

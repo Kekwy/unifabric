@@ -1,0 +1,6 @@
+syntax = "proto3";
+
+package iarnet.fabric;
+
+option java_package = "com.kekwy.unifabric.proto.fabric";
+option java_multiple_files = true;

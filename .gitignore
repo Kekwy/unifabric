@@ -1,0 +1,8 @@
+.idea
+.cursor
+target
+workspaces
+workspaces/**
+**/data
+**/.m2repo
+.draft

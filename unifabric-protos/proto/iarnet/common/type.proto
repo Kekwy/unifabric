@@ -1,0 +1,107 @@
+syntax = "proto3";
+
+package iarnet.common;
+
+option java_package = "com.kekwy.unifabric.proto.common";
+option java_multiple_files = true;
+
+// ======================== 类型系统 ========================
+
+enum TypeKind {
+  TYPE_KIND_UNSPECIFIED = 0;
+  // primitive
+  TYPE_KIND_STRING  = 1;
+  TYPE_KIND_INT32   = 2;
+  TYPE_KIND_INT64   = 3;
+  TYPE_KIND_FLOAT   = 4;
+  TYPE_KIND_DOUBLE  = 5;
+  TYPE_KIND_BOOLEAN = 6;
+  TYPE_KIND_BYTES   = 7;
+  TYPE_KIND_NULL    = 8;
+  // composite
+  TYPE_KIND_ARRAY   = 9;
+  TYPE_KIND_MAP     = 10;
+  TYPE_KIND_STRUCT  = 11;
+}
+
+message Type {
+  TypeKind kind = 1;
+  oneof detail {
+    ArrayTypeDetail array_detail = 2;
+    MapTypeDetail map_detail = 3;
+    StructTypeDetail struct_detail = 4;
+  }
+}
+
+message ArrayTypeDetail {
+  Type element_type = 1;
+}
+
+enum MapKeyKind {
+  MAP_KEY_KIND_UNSPECIFIED = 0;
+  MAP_KEY_KIND_STRING  = 1;
+  MAP_KEY_KIND_INT32   = 2;
+  MAP_KEY_KIND_INT64   = 3;
+  MAP_KEY_KIND_BOOLEAN = 4;
+}
+
+message MapTypeDetail {
+  MapKeyKind key_kind   = 1;
+  Type     value_type = 2;
+}
+
+message StructField {
+  string   name = 1;
+  Type     type = 2;
+}
+
+message StructTypeDetail {
+  repeated StructField fields = 1;
+  string class_name = 2;  // 可选: 原始语言中的类型全限定名
+}
+
+message Value {
+  oneof kind {
+    bytes bytes_value = 1;
+    int32 int32_value = 2;
+    int64 int64_value = 3;
+    float float_value = 4;
+    double double_value = 5;
+    bool bool_value = 6;
+    string string_value = 7;
+    ArrayValue array_value = 8;
+    MapValue map_value = 9;
+    StructValue struct_value = 10;
+    NullValue null_value = 11;
+  }
+}
+
+message ArrayValue {
+  repeated Value elements = 1;
+}
+
+message MapEntry {
+  oneof key {
+    string string_key = 1;
+    int32  int32_key  = 2;
+    int64  int64_key  = 3;
+    bool   bool_key   = 4;
+  }
+  Value value = 5;
+}
+
+message MapValue {
+  repeated MapEntry entries = 1;
+}
+
+message StructFieldValue {
+  string name  = 1;
+  Value  value = 2;
+}
+
+message StructValue {
+  repeated StructFieldValue fields = 1;
+}
+
+message NullValue {
+}

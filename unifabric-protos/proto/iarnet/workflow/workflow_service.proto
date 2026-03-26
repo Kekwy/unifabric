@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+package iarnet.workflow;
+
+import "iarnet/workflow/workflow.proto";
+
+option java_package = "com.kekwy.unifabric.proto.workflow";
+option java_multiple_files = true;
+
+// ======================== Workflow 提交服务 ========================
+// DSL 进程通过此服务向 control-plane 提交工作流图并管理其生命周期。
+
+service WorkflowService {
+
+  // 提交工作流图，control-plane 接收后进行调度执行
+  rpc SubmitWorkflow(SubmitWorkflowRequest) returns (SubmitWorkflowResponse);
+
+  // 查询已提交工作流的执行状态
+  rpc GetWorkflowStatus(GetWorkflowStatusRequest) returns (GetWorkflowStatusResponse);
+
+  // 取消正在执行的工作流
+  rpc CancelWorkflow(CancelWorkflowRequest) returns (CancelWorkflowResponse);
+}
+
+// ======================== 提交 ========================
+
+message SubmitWorkflowRequest {
+  // 工作流 DAG
+  WorkflowGraph graph = 1;
+}
+
+message SubmitWorkflowResponse {
+  // 本次提交的唯一标识，用于后续查询/取消
+  string submission_id = 1;
+
+  SubmissionStatus status = 2;
+
+  string message = 3;
+}
+
+enum SubmissionStatus {
+  SUBMISSION_STATUS_UNSPECIFIED = 0;
+  ACCEPTED                     = 1;
+  REJECTED                     = 2;
+}
+
+// ======================== 状态查询 ========================
+
+message GetWorkflowStatusRequest {
+  string submission_id = 1;
+}
+
+message GetWorkflowStatusResponse {
+  string submission_id = 1;
+
+  WorkflowStatus status = 2;
+
+  string message = 3;
+}
+
+enum WorkflowStatus {
+  WORKFLOW_STATUS_UNSPECIFIED = 0;
+  PENDING                    = 1;
+  RUNNING                    = 2;
+  SUCCEEDED                  = 3;
+  FAILED                     = 4;
+  CANCELLED                  = 5;
+}
+
+// ======================== 取消 ========================
+
+message CancelWorkflowRequest {
+  string submission_id = 1;
+}
+
+message CancelWorkflowResponse {
+  bool success = 1;
+
+  string message = 2;
+}

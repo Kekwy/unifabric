@@ -1,0 +1,81 @@
+syntax = "proto3";
+
+package iarnet.fabric;
+
+import "iarnet/common/resource.proto";
+
+option java_package = "com.kekwy.unifabric.proto.fabric";
+option java_multiple_files = true;
+
+
+// ======================== 节点与资源信息 ========================
+
+// 单个控制节点的资源视图。
+message PeerNodeInfo {
+  // 节点 ID（全局唯一，例如控制平面实例 ID）
+  string node_id   = 1;
+
+  // 节点名称（可读性标识，例如 hostname 或逻辑名）
+  string node_name = 2;
+
+  // Discovery gRPC 地址，例如 "host:port"
+  string address   = 3;
+
+  // 逻辑域/租户 ID，可用于隔离不同资源域
+  string domain_id = 4;
+
+  // 节点资源容量（总/已用/可用）
+  ResourceCapacity capacity = 5;
+
+  // 节点标签，例如 ["edge", "gpu", "cloud-az1"]
+  repeated string tags = 6;
+
+  // Gossip 元数据
+
+  // 节点信息版本号（单调递增），用于冲突解决
+  uint64 version = 10;
+
+  // 该节点信息在 gossip 中被传播的次数（用于 TTL / 调测）
+  int32 gossip_count = 11;
+
+  // 最后一次更新时间（毫秒时间戳）
+  int64 last_seen_ms = 12;
+}
+
+// 资源容量：复用 iarnet.ir.Resource 结构。
+message ResourceCapacity {
+  iarnet.common.ResourceSpec total     = 1;
+  iarnet.common.ResourceSpec used      = 2;
+  iarnet.common.ResourceSpec available = 3;
+}
+
+// ======================== Gossip 消息 ========================
+
+// NodeInfoGossipMessage 节点信息 gossip 消息。
+message NodeInfoGossipMessage {
+  // 发送方节点 ID / 地址 / 域 ID
+  string sender_node_id   = 1;
+  string sender_address   = 2;
+  string sender_domain_id = 3;
+
+  // Gossip 消息 ID（用于去重），可由发送方生成 UUID。
+  string message_id       = 4;
+
+  // 最大剩余跳数（可选，当前版本可不严格使用）
+  int32  ttl              = 5;
+
+  // 携带的节点信息列表：
+  // - 第一个通常为发送方自己
+  // - 后续可为发送方视角下的其它已知节点
+  repeated PeerNodeInfo nodes = 10;
+}
+
+// Gossip 响应：返回一批对方视角下的节点信息。
+message NodeInfoGossipResponse {
+  string message_id   = 1;
+  int64  timestamp_ms = 2;
+
+  // 接收方选择返回的一批节点信息（可为其已知节点的子集）。
+  repeated PeerNodeInfo nodes = 10;
+}
+

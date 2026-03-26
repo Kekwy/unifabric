@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package iarnet.provider;
+
+import "iarnet/actor/actor.proto";
+
+option java_package = "com.kekwy.unifabric.proto.provider";
+option java_multiple_files = true;
+
+// Provider 暴露给本地 Actor 的连接接口，仅流式 RPC，不定义新消息类型
+service ActorRegistrationService {
+  rpc ActorChannel(stream actor.ActorEnvelope) returns (stream actor.ActorEnvelope);
+}

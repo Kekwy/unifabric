@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package iarnet.fabric;
+
+import "iarnet/provider/control.proto";
+import "iarnet/provider/deployment.proto";
+import "iarnet/provider/signaling.proto";
+
+option java_package = "com.kekwy.unifabric.proto.fabric";
+option java_multiple_files = true;
+
+service ProviderRegistryService {
+
+  // Provider 启动后主动向控制平面注册，获取全局唯一的 provider_id。
+  rpc RegisterProvider(provider.RegisterProviderRequest) returns (provider.RegisterProviderResponse);
+
+  rpc ControlChannel(stream provider.ControlEnvelope) returns (stream provider.ControlEnvelope);
+  rpc DeploymentChannel(stream provider.DeploymentEnvelope) returns (stream provider.DeploymentEnvelope);
+  rpc SignalingChannel(stream provider.SignalingEnvelope) returns (stream provider.SignalingEnvelope);
+
+}

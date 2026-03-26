@@ -1,0 +1,42 @@
+unifabric:
+  adapter:
+    host: 172.30.23.95
+
+    # 资源适配器名称（用户自定义，注册时提交给控制平面）
+    name: docker-adapter-01
+    # 资源适配器描述
+    description: "本机 Docker 资源适配器"
+    # 引擎类型: docker / k8s
+    type: docker
+    # 可选：拓扑/区域信息，例如 "edge-a" / "az-1"
+    zone: ""
+    # control-plane 连接信息（适配器主动连接，无需暴露本地端口）
+    registry:
+      host: 127.0.0.1
+      port: 9090
+    # 资源标签
+    tags:
+      - cpu
+      - memory
+    # 资源容量配置
+    resource:
+      cpu: 4.0
+      memory: 8Gi
+      gpu: 0
+    # artifact 存储目录（默认 ~/.unifabric-adapter/artifacts）
+    # artifact-dir: ~/.unifabric-adapter/artifacts
+
+    # ===== Docker 引擎配置 =====
+    docker:
+      host: unix:///var/run/docker.sock
+      network: ""
+
+    # ===== K8s 引擎配置 =====
+    k8s:
+      kubeconfig: ""
+      in-cluster: false
+      namespace: default
+
+    # ===== 本地 Actor 注册中心连接 =====
+    actor-registry:
+      port: 10000

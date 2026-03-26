@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package iarnet.fabric;
+
+import "iarnet/fabric/discovery.proto";
+
+option java_package = "com.kekwy.unifabric.proto.fabric";
+option java_multiple_files = true;
+
+
+// ======================== 资源发现 / Gossip 服务 ========================
+// 由每个控制节点实现，用于：
+// - 通过 Gossip 协议交换各节点的资源视图
+// - 为跨控制节点调度提供全局容量信息
+
+service DiscoveryService {
+
+  // 交换节点信息（gossip 协议）。
+  //
+  // 调用方将自己及部分已知节点信息打包到 NodeInfoGossipMessage 中，
+  // 接收方更新本地视图后，返回一批自己视角下的节点信息。
+  rpc GossipNodeInfo(NodeInfoGossipMessage) returns (NodeInfoGossipResponse);
+}
