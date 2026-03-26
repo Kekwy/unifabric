@@ -2,23 +2,20 @@ package com.kekwy.unifabric.adapter.deployment;
 
 import com.kekwy.unifabric.adapter.actor.ActorRouter;
 import com.kekwy.unifabric.adapter.artifact.ArtifactFetcher;
-import com.kekwy.unifabric.adapter.artifact.ArtifactStore;
-import com.kekwy.unifabric.adapter.signaling.SignalingService;
 import com.kekwy.unifabric.adapter.config.AdapterIdentity;
-import com.kekwy.unifabric.adapter.engine.ResourceEngine;
+import com.kekwy.unifabric.adapter.engine.ResourceProvider;
 import com.kekwy.unifabric.adapter.registry.DelegatingObserver;
 import com.kekwy.unifabric.adapter.registry.AdapterRegistryClient;
 import com.kekwy.unifabric.proto.fabric.ProviderRegistryServiceGrpc;
-import com.kekwy.unifabric.proto.provider.DeployActorRequest;
-import com.kekwy.unifabric.proto.provider.DeployActorResponse;
+import com.kekwy.unifabric.proto.provider.DeployInstanceRequest;
+import com.kekwy.unifabric.proto.provider.DeployInstanceResponse;
 import com.kekwy.unifabric.proto.provider.DeploymentEnvelope;
-import com.kekwy.unifabric.proto.provider.GetActorStatusRequest;
-import com.kekwy.unifabric.proto.provider.GetActorStatusResponse;
-import com.kekwy.unifabric.proto.provider.RemoveActorRequest;
-import com.kekwy.unifabric.proto.provider.RemoveActorResponse;
-import com.kekwy.unifabric.proto.provider.DownstreamGroup;
-import com.kekwy.unifabric.proto.provider.StopActorRequest;
-import com.kekwy.unifabric.proto.provider.StopActorResponse;
+import com.kekwy.unifabric.proto.provider.GetInstanceStatusRequest;
+import com.kekwy.unifabric.proto.provider.GetInstanceStatusResponse;
+import com.kekwy.unifabric.proto.provider.RemoveInstanceRequest;
+import com.kekwy.unifabric.proto.provider.RemoveInstanceResponse;
+import com.kekwy.unifabric.proto.provider.StopInstanceRequest;
+import com.kekwy.unifabric.proto.provider.StopInstanceResponse;
 import io.grpc.Metadata;
 import io.grpc.stub.MetadataUtils;
 import io.grpc.stub.StreamObserver;
@@ -28,9 +25,6 @@ import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
@@ -46,9 +40,8 @@ public class DeploymentService {
 
     private final ProviderRegistryServiceGrpc.ProviderRegistryServiceStub asyncStub;
     private final ScheduledExecutorService scheduler;
-    private final ResourceEngine engine;
+    private final ResourceProvider resourceProvider;
     private final ArtifactFetcher artifactFetcher;
-    private final ArtifactStore artifactStore;
     private final ActorRouter actorRouter;
     private final AdapterIdentity identity;
 
@@ -58,16 +51,14 @@ public class DeploymentService {
 
     public DeploymentService(ProviderRegistryServiceGrpc.ProviderRegistryServiceStub providerRegistryAsyncStub,
                              ScheduledExecutorService adapterScheduler,
-                             ResourceEngine engine,
+                             ResourceProvider resourceProvider,
                              ArtifactFetcher artifactFetcher,
-                             ArtifactStore artifactStore,
                              ActorRouter actorRouter,
                              AdapterIdentity identity) {
         this.asyncStub = providerRegistryAsyncStub;
         this.scheduler = adapterScheduler;
-        this.engine = engine;
+        this.resourceProvider = resourceProvider;
         this.artifactFetcher = artifactFetcher;
-        this.artifactStore = artifactStore;
         this.actorRouter = actorRouter;
         this.identity = identity;
     }
@@ -120,38 +111,27 @@ public class DeploymentService {
     // --- 业务方法，供 DeploymentMessageDispatcher 委托调用 ---
 
     @SuppressWarnings("ConstantValue")
-    public DeployActorResponse deployActor(DeployActorRequest request) throws IOException {
+    public DeployInstanceResponse deployInstance(DeployInstanceRequest request) throws IOException {
         Path artifactPath = null;
         String artifactUrl = request.getArtifactUrl();
         if (artifactUrl != null && !artifactUrl.isBlank()) {
-            artifactPath = artifactFetcher.fetch(request.getActorId(), artifactUrl);
+            artifactPath = artifactFetcher.fetch(request.getInstanceId(), artifactUrl);
         }
-        String actorId = request.getActorId();
-        actorRouter.registerActorRouting(actorId, request.getInstanceIndex(),
-                request.getUpstreamActorAddrsList(), request.getDownstreamGroupsList());
-
-        Map<Integer, Path> conditionFunctionPaths = new HashMap<>();
-        for (DownstreamGroup group : request.getDownstreamGroupsList()) {
-            if (!group.hasConditionFunction()) {
-                continue;
-            }
-            int port = group.getOutputPort();
-            Path path = artifactStore.storeConditionFunction(actorId, port, group.getConditionFunction().toByteArray());
-            conditionFunctionPaths.put(port, path);
-        }
-
-        return engine.deployActor(request, artifactPath, conditionFunctionPaths);
+        String instanceId = request.getInstanceId();
+        actorRouter.registerActorRouting(instanceId, request.getInstanceIndex(),
+                request.getUpstreamInstanceAddrsList(), request.getDownstreamGroupsList());
+        return resourceProvider.deployInstance(request, artifactPath);
     }
 
-    public StopActorResponse stopActor(StopActorRequest request) {
-        return engine.stopActor(request.getActorId());
+    public StopInstanceResponse stopInstance(StopInstanceRequest request) {
+        return resourceProvider.stopInstance(request.getInstanceId());
     }
 
-    public RemoveActorResponse removeActor(RemoveActorRequest request) {
-        return engine.removeActor(request.getActorId());
+    public RemoveInstanceResponse removeInstance(RemoveInstanceRequest request) {
+        return resourceProvider.removeInstance(request.getInstanceId());
     }
 
-    public GetActorStatusResponse getActorStatus(GetActorStatusRequest request) {
-        return engine.getActorStatus(request.getActorId());
+    public GetInstanceStatusResponse getInstanceStatus(GetInstanceStatusRequest request) {
+        return resourceProvider.getInstanceStatus(request.getInstanceId());
     }
 }

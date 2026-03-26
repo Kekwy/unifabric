@@ -17,7 +17,7 @@ import org.springframework.stereotype.Component;
  *   <li>{@code RegisterProvider} — 一元 RPC，Provider 注册</li>
  *   <li>{@code ControlChannel} — 双向流，控制消息（预留）</li>
  *   <li>{@code DeploymentChannel} — 双向流，部署命令的请求-响应</li>
- *   <li>{@code SignalingChannel} — 双向流，Actor 状态信令</li>
+ *   <li>{@code SignalingChannel} — 双向流，实例状态信令</li>
  * </ul>
  * 流式 RPC 通过 gRPC metadata 中的 {@code provider-id} 标识连接所属 Provider，
  * 由 {@link ProviderIdInterceptor} 提取到 gRPC Context 中。
@@ -194,8 +194,8 @@ public class ProviderGrpcService
                 log.info("SignalingChannel 收到: providerId={}, payloadCase={}", providerId, payloadCase);
                 try {
                     switch (payloadCase) {
-                        case ACTOR_READY -> handleActorReady(providerId, value.getActorReady());
-                        case ACTOR_CHANNEL -> handleActorChannel(value.getActorChannel());
+                        case INSTANCE_READY -> handleInstanceReady(providerId, value.getInstanceReady());
+                        case INSTANCE_CHANNEL -> handleInstanceChannel(value.getInstanceChannel());
                         case PAYLOAD_NOT_SET -> log.warn("SignalingChannel 收到空 payload: providerId={}", providerId);
                         default -> log.debug("SignalingChannel 收到未处理的消息类型: providerId={}, type={}",
                                 providerId, payloadCase);
@@ -225,20 +225,20 @@ public class ProviderGrpcService
 
     // ======================== 信令事件处理 ========================
 
-    private void handleActorReady(String providerId, ActorReadyReport ready) {
-        String actorId = ready.getActorId();
-        if (actorId == null || actorId.isBlank()) {
-            log.warn("收到 ActorReadyReport 但 actor_id 为空");
+    private void handleInstanceReady(String providerId, InstanceReadyReport ready) {
+        String instanceId = ready.getInstanceId();
+        if (instanceId == null || instanceId.isBlank()) {
+            log.warn("收到 InstanceReadyReport 但 instance_id 为空");
             return;
         }
-        log.info("收到 ActorReadyReport: actorId={}, providerId={}", actorId, providerId);
-        actorRegistry.onActorReady(actorId, providerId);
+        log.info("收到 InstanceReadyReport: instanceId={}, providerId={}", instanceId, providerId);
+        actorRegistry.onActorReady(instanceId, providerId);
     }
 
-    private void handleActorChannel(ActorChannelStatus status) {
-        String src = status.getSrcActorAddr();
-        String dst = status.getDstActorAddr();
-        log.info("收到 ActorChannelStatus: src={}, dst={}, connected={}", src, dst, status.getConnected());
+    private void handleInstanceChannel(InstanceChannelStatus status) {
+        String src = status.getSrcInstanceAddr();
+        String dst = status.getDstInstanceAddr();
+        log.info("收到 InstanceChannelStatus: src={}, dst={}, connected={}", src, dst, status.getConnected());
 
         if (status.getConnected()) {
             actorRegistry.onChannelConnected(src, dst);

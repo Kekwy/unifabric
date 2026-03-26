@@ -22,27 +22,27 @@ message SignalingEnvelope {
     ConnectInstruction connect_instruction = 10;
     IceEnvelope        ice_envelope        = 11;
     CandidateUpdate    candidate_update    = 12;
-    ActorChannelStatus actor_channel       = 13;
-    ActorReadyReport actor_ready = 14;
-    ActorMessageForward actor_message_forward = 15;
+    InstanceChannelStatus instance_channel = 13;
+    InstanceReadyReport instance_ready = 14;
+    InstanceMessageForward instance_message_forward = 15;
   }
 }
 
-message ActorMessageForward {
-  string target = 1; // 目标 actor id（由 Router 填写物理地址）
+message InstanceMessageForward {
+  string target = 1; // 目标 instance id（由 Router 填写物理地址）
   actor.ActorEnvelope actor_envelope = 2;
 }
 
-message ActorReadyReport {
-  string actor_id = 1;
+message InstanceReadyReport {
+  string instance_id = 1;
 }
 
-// 由 Provider 上报某条 Actor 间通道的状态
-message ActorChannelStatus {
+// 由 Provider 上报某条实例间通道的状态
+message InstanceChannelStatus {
   string workflow_id     = 1;
   string application_id  = 2;
-  string src_actor_addr  = 3;
-  string dst_actor_addr  = 4;
+  string src_instance_addr  = 3;
+  string dst_instance_addr  = 4;
   bool   connected       = 5; // true 表示该方向的通道已建立
 }
 
@@ -51,9 +51,9 @@ message ConnectInstruction {
   // 本次连接协商的唯一标识，用于在多次重试/候选交换中进行关联。
   string connect_id = 1;
 
-  // 源 Actor 与目标 Actor 的虚拟地址（逻辑标识）
-  string src_actor_addr = 2;
-  string dst_actor_addr = 3;
+  // 源实例与目标实例的虚拟地址（逻辑标识）
+  string src_instance_addr = 2;
+  string dst_instance_addr = 3;
 
   // 连接角色：true 表示本设备作为“主动发起方”（caller），false 为“被动应答方”（callee）。
   bool   initiator      = 4;

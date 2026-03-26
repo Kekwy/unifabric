@@ -5,7 +5,7 @@ import com.kekwy.unifabric.adapter.artifact.ArtifactFetcher;
 import com.kekwy.unifabric.adapter.artifact.ArtifactStore;
 import com.kekwy.unifabric.adapter.control.ControlService;
 import com.kekwy.unifabric.adapter.deployment.DeploymentService;
-import com.kekwy.unifabric.adapter.engine.ResourceEngine;
+import com.kekwy.unifabric.adapter.engine.ResourceProvider;
 import com.kekwy.unifabric.adapter.engine.docker.DockerEngine;
 import com.kekwy.unifabric.adapter.engine.k8s.KubernetesEngine;
 import com.kekwy.unifabric.adapter.registry.AdapterRegistryClient;
@@ -26,7 +26,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 
 /**
- * 资源适配器运行时 Bean 配置：ArtifactStore、ResourceEngine、ArtifactFetcher、
+ * 资源适配器运行时 Bean 配置：ArtifactStore、ResourceProvider、ArtifactFetcher、
  * Actor 注册 gRPC Server、AdapterRegistryClient。
  * <p>
  * 创建与销毁顺序由依赖与 @DependsOn 保证：先启动 actorRegistrationServer，
@@ -43,7 +43,7 @@ public class AdapterRuntimeConfig {
     }
 
     @Bean(destroyMethod = "close")
-    public ResourceEngine resourceEngine(AdapterProperties props, ArtifactStore artifactStore) {
+    public ResourceProvider resourceProvider(AdapterProperties props, ArtifactStore artifactStore) {
         return createEngine(props, artifactStore);
     }
 
@@ -113,7 +113,7 @@ public class AdapterRuntimeConfig {
         return client;
     }
 
-    private static ResourceEngine createEngine(AdapterProperties props, ArtifactStore artifactStore) {
+    private static ResourceProvider createEngine(AdapterProperties props, ArtifactStore artifactStore) {
         String host = props.getHost() != null && !props.getHost().isBlank()
                 ? props.getHost() : "host.docker.internal";
         String actorRegistryAddr = host + ":" + props.getActorRegistry().getPort();

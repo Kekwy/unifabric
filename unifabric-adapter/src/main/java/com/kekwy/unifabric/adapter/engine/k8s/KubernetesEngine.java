@@ -1,9 +1,7 @@
 package com.kekwy.unifabric.adapter.engine.k8s;
 
 import com.kekwy.unifabric.adapter.artifact.ArtifactStore;
-import com.kekwy.unifabric.adapter.engine.ResourceEngine;
-import com.kekwy.unifabric.proto.common.FunctionDescriptor;
-import com.kekwy.unifabric.proto.common.Lang;
+import com.kekwy.unifabric.adapter.engine.ResourceProvider;
 import com.kekwy.unifabric.proto.common.ResourceSpec;
 import com.kekwy.unifabric.proto.provider.*;
 import io.fabric8.kubernetes.api.model.*;
@@ -18,24 +16,22 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Kubernetes Provider 引擎：将每个 Actor 部署为一个 Pod。
+ * Kubernetes Provider 引擎：将每个实例部署为一个 Pod。
  */
-public class KubernetesEngine implements ResourceEngine {
+public class KubernetesEngine implements ResourceProvider {
 
     private static final Logger log = LoggerFactory.getLogger(KubernetesEngine.class);
 
     private static final String CONTAINER_FUNCTION_DIR = "/opt/iarnet/function";
-    private static final String CONTAINER_FUNCTION_FILE = CONTAINER_FUNCTION_DIR + "/function.pb";
-    private static final String CONTAINER_CONDITIONS_DIR = CONTAINER_FUNCTION_DIR + "/conditions";
     private static final String CONTAINER_ARTIFACT_DIR = "/opt/iarnet/artifact";
 
     private final KubernetesClient kubeClient;
     private final ArtifactStore artifactStore;
     private final String namespace;
 
-    /** actorId → podName */
-    private final Map<String, String> actorPods = new ConcurrentHashMap<>();
-    private final Map<String, ResourceSpec> actorResources = new ConcurrentHashMap<>();
+    /** instanceId → podName */
+    private final Map<String, String> instancePods = new ConcurrentHashMap<>();
+    private final Map<String, ResourceSpec> instanceResources = new ConcurrentHashMap<>();
 
     public KubernetesEngine(String kubeconfig, boolean inCluster, String namespace,
                             ArtifactStore artifactStore) {
@@ -67,48 +63,35 @@ public class KubernetesEngine implements ResourceEngine {
     }
 
     @Override
-    public DeployActorResponse deployActor(DeployActorRequest request, Path artifactLocalPath,
-                                            Map<Integer, Path> conditionFunctionPaths) {
-        String actorId = request.getActorId();
-        String podName = sanitizePodName(actorId);
-        boolean hasConditions = conditionFunctionPaths != null && !conditionFunctionPaths.isEmpty();
-        log.info("部署 K8s Pod: actorId={}, podName={}, lang={}, hasArtifact={}, hasFunctionDescriptor={}, hasConditions={}",
-                actorId, podName, request.getLang(), artifactLocalPath != null, request.hasFunctionDescriptor(), hasConditions);
+    public DeployInstanceResponse deployInstance(DeployInstanceRequest request, Path artifactLocalPath) {
+        String instanceId = request.getInstanceId();
+        String podName = sanitizePodName(instanceId);
+        log.info("部署 K8s Pod: instanceId={}, podName={}, image={}, hasArtifact={}",
+                instanceId, podName, request.getImage(), artifactLocalPath != null);
 
         try {
-            String functionConfigMapName = null;
-            if (request.hasFunctionDescriptor()) {
-                functionConfigMapName = createFunctionDescriptorConfigMap(actorId, request.getFunctionDescriptor());
-            }
-            String conditionsConfigMapName = null;
-            if (hasConditions) {
-                conditionsConfigMapName = createConditionsConfigMap(actorId, conditionFunctionPaths);
-            }
-            Pod pod = buildPod(podName, request, artifactLocalPath, functionConfigMapName, conditionsConfigMapName, hasConditions);
-            if (pod == null) {
-                throw new UnsupportedOperationException("buildPod 尚未实现，请补全 Pod 构建逻辑");
-            }
+            Pod pod = buildPod(podName, request, artifactLocalPath);
 
             Pod created = kubeClient.pods().inNamespace(namespace).resource(pod).create();
 
-            actorPods.put(actorId, created.getMetadata().getName());
-            actorResources.put(actorId, request.getResourceRequest());
+            instancePods.put(instanceId, created.getMetadata().getName());
+            instanceResources.put(instanceId, request.getResourceRequest());
 
-            log.info("K8s Pod 部署成功: actorId={}, pod={}", actorId, created.getMetadata().getName());
+            log.info("K8s Pod 部署成功: instanceId={}, pod={}", instanceId, created.getMetadata().getName());
 
-            return DeployActorResponse.newBuilder()
-                    .setActor(ActorInfo.newBuilder()
-                            .setActorId(actorId)
-                            .setStatus(ActorStatus.RUNNING)
+            return DeployInstanceResponse.newBuilder()
+                    .setInstance(InstanceInfo.newBuilder()
+                            .setInstanceId(instanceId)
+                            .setStatus(InstanceStatus.RUNNING)
                             .build())
                     .build();
 
         } catch (Exception e) {
-            log.error("K8s Pod 部署失败: actorId={}", actorId, e);
-            return DeployActorResponse.newBuilder()
-                    .setActor(ActorInfo.newBuilder()
-                            .setActorId(actorId)
-                            .setStatus(ActorStatus.FAILED)
+            log.error("K8s Pod 部署失败: instanceId={}", instanceId, e);
+            return DeployInstanceResponse.newBuilder()
+                    .setInstance(InstanceInfo.newBuilder()
+                            .setInstanceId(instanceId)
+                            .setStatus(InstanceStatus.FAILED)
                             .setMessage(e.getMessage())
                             .build())
                     .build();
@@ -116,21 +99,21 @@ public class KubernetesEngine implements ResourceEngine {
     }
 
     @Override
-    public StopActorResponse stopActor(String actorId) {
-        String podName = actorPods.get(actorId);
+    public StopInstanceResponse stopInstance(String instanceId) {
+        String podName = instancePods.get(instanceId);
         if (podName == null) {
-            return StopActorResponse.newBuilder()
+            return StopInstanceResponse.newBuilder()
                     .setSuccess(false)
-                    .setMessage("未找到 Actor: " + actorId)
+                    .setMessage("未找到实例: " + instanceId)
                     .build();
         }
         try {
             kubeClient.pods().inNamespace(namespace).withName(podName).delete();
-            log.info("K8s Pod 已停止: actorId={}, pod={}", actorId, podName);
-            return StopActorResponse.newBuilder().setSuccess(true).build();
+            log.info("K8s Pod 已停止: instanceId={}, pod={}", instanceId, podName);
+            return StopInstanceResponse.newBuilder().setSuccess(true).build();
         } catch (Exception e) {
-            log.error("停止 K8s Pod 失败: actorId={}", actorId, e);
-            return StopActorResponse.newBuilder()
+            log.error("停止 K8s Pod 失败: instanceId={}", instanceId, e);
+            return StopInstanceResponse.newBuilder()
                     .setSuccess(false)
                     .setMessage(e.getMessage())
                     .build();
@@ -138,23 +121,23 @@ public class KubernetesEngine implements ResourceEngine {
     }
 
     @Override
-    public RemoveActorResponse removeActor(String actorId) {
-        String podName = actorPods.remove(actorId);
+    public RemoveInstanceResponse removeInstance(String instanceId) {
+        String podName = instancePods.remove(instanceId);
         if (podName == null) {
-            return RemoveActorResponse.newBuilder()
+            return RemoveInstanceResponse.newBuilder()
                     .setSuccess(false)
-                    .setMessage("未找到 Actor: " + actorId)
+                    .setMessage("未找到实例: " + instanceId)
                     .build();
         }
         try {
             kubeClient.pods().inNamespace(namespace).withName(podName).delete();
-            actorResources.remove(actorId);
-            log.info("K8s Pod 已移除: actorId={}, pod={}", actorId, podName);
-            return RemoveActorResponse.newBuilder().setSuccess(true).build();
+            instanceResources.remove(instanceId);
+            log.info("K8s Pod 已移除: instanceId={}, pod={}", instanceId, podName);
+            return RemoveInstanceResponse.newBuilder().setSuccess(true).build();
         } catch (Exception e) {
-            log.error("移除 K8s Pod 失败: actorId={}", actorId, e);
-            actorPods.put(actorId, podName);
-            return RemoveActorResponse.newBuilder()
+            log.error("移除 K8s Pod 失败: instanceId={}", instanceId, e);
+            instancePods.put(instanceId, podName);
+            return RemoveInstanceResponse.newBuilder()
                     .setSuccess(false)
                     .setMessage(e.getMessage())
                     .build();
@@ -162,40 +145,40 @@ public class KubernetesEngine implements ResourceEngine {
     }
 
     @Override
-    public GetActorStatusResponse getActorStatus(String actorId) {
-        String podName = actorPods.get(actorId);
+    public GetInstanceStatusResponse getInstanceStatus(String instanceId) {
+        String podName = instancePods.get(instanceId);
         if (podName == null) {
-            return GetActorStatusResponse.newBuilder()
-                    .setActor(ActorInfo.newBuilder()
-                            .setActorId(actorId)
-                            .setStatus(ActorStatus.ACTOR_STATUS_UNSPECIFIED)
-                            .setMessage("未找到 Actor")
+            return GetInstanceStatusResponse.newBuilder()
+                    .setInstance(InstanceInfo.newBuilder()
+                            .setInstanceId(instanceId)
+                            .setStatus(InstanceStatus.INSTANCE_STATUS_UNSPECIFIED)
+                            .setMessage("未找到实例")
                             .build())
                     .build();
         }
         try {
             Pod pod = kubeClient.pods().inNamespace(namespace).withName(podName).get();
             if (pod == null) {
-                actorPods.remove(actorId);
-                return GetActorStatusResponse.newBuilder()
-                        .setActor(ActorInfo.newBuilder()
-                                .setActorId(actorId)
-                                .setStatus(ActorStatus.REMOVED)
+                instancePods.remove(instanceId);
+                return GetInstanceStatusResponse.newBuilder()
+                        .setInstance(InstanceInfo.newBuilder()
+                                .setInstanceId(instanceId)
+                                .setStatus(InstanceStatus.REMOVED)
                                 .build())
                         .build();
             }
-            ActorStatus status = mapPodPhase(pod.getStatus().getPhase());
-            return GetActorStatusResponse.newBuilder()
-                    .setActor(ActorInfo.newBuilder()
-                            .setActorId(actorId)
+            InstanceStatus status = mapPodPhase(pod.getStatus().getPhase());
+            return GetInstanceStatusResponse.newBuilder()
+                    .setInstance(InstanceInfo.newBuilder()
+                            .setInstanceId(instanceId)
                             .setStatus(status)
                             .build())
                     .build();
         } catch (Exception e) {
-            return GetActorStatusResponse.newBuilder()
-                    .setActor(ActorInfo.newBuilder()
-                            .setActorId(actorId)
-                            .setStatus(ActorStatus.FAILED)
+            return GetInstanceStatusResponse.newBuilder()
+                    .setInstance(InstanceInfo.newBuilder()
+                            .setInstanceId(instanceId)
+                            .setStatus(InstanceStatus.FAILED)
                             .setMessage(e.getMessage())
                             .build())
                     .build();
@@ -208,49 +191,51 @@ public class KubernetesEngine implements ResourceEngine {
         log.info("K8s 客户端已关闭");
     }
 
-    private String createFunctionDescriptorConfigMap(String actorId, FunctionDescriptor fd) {
-        String name = "iarnet-fd-" + sanitizePodName(actorId);
-        ConfigMap cm = new ConfigMapBuilder()
-                .withNewMetadata()
-                    .withName(name)
-                    .withNamespace(namespace)
-                .endMetadata()
-                .addToBinaryData("function.pb", Arrays.toString(fd.toByteArray()))
-                .build();
-        kubeClient.configMaps().inNamespace(namespace).resource(cm).create();
-        log.info("已创建函数描述 ConfigMap: actorId={}, name={}", actorId, name);
-        return name;
-    }
-
-    private String createConditionsConfigMap(String actorId, Map<Integer, Path> conditionFunctionPaths) {
-        String name = "iarnet-conditions-" + sanitizePodName(actorId);
-        ConfigMapBuilder builder = new ConfigMapBuilder()
-                .withNewMetadata()
-                    .withName(name)
-                    .withNamespace(namespace)
-                .endMetadata();
-        for (Map.Entry<Integer, Path> e : conditionFunctionPaths.entrySet()) {
-            try {
-                byte[] bytes = java.nio.file.Files.readAllBytes(e.getValue());
-                builder.addToBinaryData("condition_port_" + e.getKey() + ".pb", Arrays.toString(bytes));
-            } catch (java.io.IOException ex) {
-                log.warn("读取条件函数文件失败: port={}, path={}", e.getKey(), e.getValue(), ex);
-            }
+    private Pod buildPod(String podName, DeployInstanceRequest request, Path artifactLocalPath) {
+        ResourceSpec resource = request.getResourceRequest();
+        Map<String, Quantity> requests = new HashMap<>();
+        if (resource != null && resource.getCpu() > 0) {
+            requests.put("cpu", new Quantity(Double.toString(resource.getCpu())));
         }
-        ConfigMap cm = builder.build();
-        kubeClient.configMaps().inNamespace(namespace).resource(cm).create();
-        log.info("已创建条件函数 ConfigMap: actorId={}, name={}, ports={}", actorId, name, conditionFunctionPaths.keySet());
-        return name;
-    }
+        if (resource != null && resource.getMemory() != null && !resource.getMemory().isBlank()) {
+            requests.put("memory", new Quantity(resource.getMemory()));
+        }
+        List<EnvVar> envVars = new ArrayList<>();
+        request.getEnvMap().forEach((k, v) -> envVars.add(new EnvVar(k, v, null)));
+        if (artifactLocalPath != null && java.nio.file.Files.isRegularFile(artifactLocalPath)) {
+            envVars.add(new EnvVar("IARNET_ARTIFACT_PATH", CONTAINER_ARTIFACT_DIR + "/" + artifactLocalPath.getFileName(), null));
+        }
 
-    /**
-     * TODO: 补全 Pod 构建逻辑（镜像、资源、volume 挂载、env 等）。
-     * 当 conditionsConfigMapName 非空时，挂载至 CONTAINER_CONDITIONS_DIR 并设置 IARNET_CONDITION_FUNCTIONS_DIR。
-     */
-    private Pod buildPod(String podName, DeployActorRequest request, Path artifactLocalPath,
-                         String functionConfigMapName, String conditionsConfigMapName, boolean hasConditions) {
-        // TODO: 实现完整的 Pod 构建（含 conditions ConfigMap 挂载与 IARNET_CONDITION_FUNCTIONS_DIR）
-        return null;
+        ContainerBuilder cb = new ContainerBuilder()
+                .withName("instance")
+                .withImage(request.getImage())
+                .withEnv(envVars)
+                .withResources(new ResourceRequirementsBuilder().withRequests(requests).build());
+        if (artifactLocalPath != null && java.nio.file.Files.isRegularFile(artifactLocalPath)) {
+            cb.addNewVolumeMount().withName("artifact").withMountPath(CONTAINER_ARTIFACT_DIR).endVolumeMount();
+        }
+
+        PodBuilder pb = new PodBuilder()
+                .withNewMetadata()
+                    .withName(podName)
+                    .withNamespace(namespace)
+                    .addToLabels("unifabric.managed", "true")
+                    .addToLabels("unifabric.instance_id", request.getInstanceId())
+                .endMetadata()
+                .withNewSpec()
+                    .withContainers(cb.build())
+                    .withRestartPolicy("Never")
+                .endSpec();
+
+        if (artifactLocalPath != null && java.nio.file.Files.isRegularFile(artifactLocalPath)) {
+            pb.editSpec()
+                    .addNewVolume()
+                        .withName("artifact")
+                        .withNewHostPath().withPath(artifactLocalPath.getParent().toAbsolutePath().toString()).endHostPath()
+                    .endVolume()
+                .endSpec();
+        }
+        return pb.build();
     }
 
     private String sanitizePodName(String name) {
@@ -261,14 +246,14 @@ public class KubernetesEngine implements ResourceEngine {
         return s.isEmpty() ? "pod" : s;
     }
 
-    private ActorStatus mapPodPhase(String phase) {
-        if (phase == null) return ActorStatus.ACTOR_STATUS_UNSPECIFIED;
+    private InstanceStatus mapPodPhase(String phase) {
+        if (phase == null) return InstanceStatus.INSTANCE_STATUS_UNSPECIFIED;
         return switch (phase) {
-            case "Pending" -> ActorStatus.PENDING;
-            case "Running" -> ActorStatus.RUNNING;
-            case "Succeeded" -> ActorStatus.STOPPED;
-            case "Failed" -> ActorStatus.FAILED;
-            default -> ActorStatus.ACTOR_STATUS_UNSPECIFIED;
+            case "Pending" -> InstanceStatus.PENDING;
+            case "Running" -> InstanceStatus.RUNNING;
+            case "Succeeded" -> InstanceStatus.STOPPED;
+            case "Failed" -> InstanceStatus.FAILED;
+            default -> InstanceStatus.INSTANCE_STATUS_UNSPECIFIED;
         };
     }
 }

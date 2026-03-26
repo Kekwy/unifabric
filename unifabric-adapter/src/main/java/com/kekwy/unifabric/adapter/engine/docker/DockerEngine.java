@@ -10,9 +10,7 @@ import com.github.dockerjava.core.DockerClientImpl;
 import com.github.dockerjava.httpclient5.ApacheDockerHttpClient;
 import com.github.dockerjava.transport.DockerHttpClient;
 import com.kekwy.unifabric.adapter.artifact.ArtifactStore;
-import com.kekwy.unifabric.adapter.engine.ResourceEngine;
-import com.kekwy.unifabric.proto.common.FunctionDescriptor;
-import com.kekwy.unifabric.proto.common.Lang;
+import com.kekwy.unifabric.adapter.engine.ResourceProvider;
 import com.kekwy.unifabric.proto.common.ResourceSpec;
 import com.kekwy.unifabric.proto.provider.*;
 import org.slf4j.Logger;
@@ -25,16 +23,14 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Docker Provider 引擎：使用 docker-java 与 Docker daemon 通信，
- * 实现 Actor 容器的部署、停止、移除和状态查询。
+ * 实现通用实例容器的部署、停止、移除和状态查询。
  */
-public class DockerEngine implements ResourceEngine {
+public class DockerEngine implements ResourceProvider {
 
     private static final Logger log = LoggerFactory.getLogger(DockerEngine.class);
 
     private static final String CONTAINER_ARTIFACT_DIR = "/opt/iarnet/artifact";
     private static final String CONTAINER_FUNCTION_DIR = "/opt/iarnet/function";
-    private static final String CONTAINER_FUNCTION_FILE = CONTAINER_FUNCTION_DIR + "/function.pb";
-    private static final String CONTAINER_CONDITIONS_DIR = CONTAINER_FUNCTION_DIR + "/conditions";
 
     private final DockerClient dockerClient;
     private final ArtifactStore artifactStore;
@@ -42,13 +38,13 @@ public class DockerEngine implements ResourceEngine {
     private final String actorRegistryAddr;
 
     /**
-     * actorId → containerId
+     * instanceId → containerId
      */
-    private final Map<String, String> actorContainers = new ConcurrentHashMap<>();
+    private final Map<String, String> instanceContainers = new ConcurrentHashMap<>();
     /**
-     * actorId → 分配的资源
+     * instanceId → 分配的资源
      */
-    private final Map<String, ResourceSpec> actorResources = new ConcurrentHashMap<>();
+    private final Map<String, ResourceSpec> instanceResources = new ConcurrentHashMap<>();
 
     public DockerEngine(String dockerHost, String network,
                         ArtifactStore artifactStore,
@@ -93,65 +89,35 @@ public class DockerEngine implements ResourceEngine {
         return "docker";
     }
 
-    private String resolveImageForLang(Lang lang) {
-        if (lang == null) {
-            return "iarnet-actor-java:latest";
-        }
-        return switch (lang) {
-            case LANG_PYTHON -> "iarnet-actor-python:latest";
-            default -> "iarnet-actor-java:latest";
-        };
-    }
-
     @Override
-    public DeployActorResponse deployActor(DeployActorRequest request, Path artifactLocalPath,
-                                           Map<Integer, Path> conditionFunctionPaths) {
-        String actorId = request.getActorId();
-        Lang lang = request.getLang();
-        String image = resolveImageForLang(lang);
-        boolean hasConditions = conditionFunctionPaths != null && !conditionFunctionPaths.isEmpty();
-        log.info("部署 Docker Actor: actorId={}, lang={}, image={}, hasArtifact={}, hasFunctionDescriptor={}, hasConditions={}",
-                actorId, lang, image, artifactLocalPath != null, request.hasFunctionDescriptor(), hasConditions);
+    public DeployInstanceResponse deployInstance(DeployInstanceRequest request, Path artifactLocalPath) {
+        String instanceId = request.getInstanceId();
+        String image = request.getImage();
+        if (image == null || image.isBlank()) {
+            image = "iarnet-actor-java:latest";
+        }
+        log.info("部署 Docker 实例: instanceId={}, image={}, hasArtifact={}",
+                instanceId, image, artifactLocalPath != null);
 
         try {
-            Path functionDescriptorPath = null;
-            if (request.hasFunctionDescriptor()) {
-                FunctionDescriptor fd = request.getFunctionDescriptor();
-                functionDescriptorPath = artifactStore.storeFunctionDescriptor(actorId, fd.toByteArray());
-            }
-
             List<String> envList = new ArrayList<>();
-            envList.add("IARNET_ACTOR_ID=" + actorId);
             envList.add("IARNET_ACTOR_REGISTRY_ADDR=" + actorRegistryAddr);
+            request.getEnvMap().forEach((k, v) -> envList.add(k + "=" + v));
 
             if (artifactLocalPath != null && java.nio.file.Files.isRegularFile(artifactLocalPath)) {
                 String inContainerPath = CONTAINER_ARTIFACT_DIR + "/" + artifactLocalPath.getFileName().toString();
                 envList.add("IARNET_ARTIFACT_PATH=" + inContainerPath);
             }
-            if (functionDescriptorPath != null) {
-                envList.add("IARNET_ACTOR_FUNCTION_FILE=" + CONTAINER_FUNCTION_FILE);
-            }
-            if (hasConditions) {
-                envList.add("IARNET_CONDITION_FUNCTIONS_DIR=" + CONTAINER_CONDITIONS_DIR);
-            }
-            envList.add("IARNET_NODE_KIND=" + request.getNodeKind().name());
 
-            Map<String, String> labels = new HashMap<>();
+            Map<String, String> labels = new HashMap<>(request.getLabelsMap());
             labels.put("unifabric.managed", "true");
-            labels.put("unifabric.actor_id", actorId);
+            labels.put("unifabric.instance_id", instanceId);
 
             var createCmd = dockerClient.createContainerCmd(image)
-                    .withName(actorId)
+                    .withName(instanceId)
                     .withEnv(envList)
                     .withLabels(labels)
-                    .withHostConfig(
-                            buildHostConfig(
-                                    request,
-                                    artifactLocalPath,
-                                    functionDescriptorPath,
-                                    hasConditions
-                            )
-                    );
+                    .withHostConfig(buildHostConfig(request, artifactLocalPath));
 
             CreateContainerResponse container = createCmd.exec();
             String containerId = container.getId();
@@ -165,24 +131,24 @@ public class DockerEngine implements ResourceEngine {
 
             dockerClient.startContainerCmd(containerId).exec();
 
-            actorContainers.put(actorId, containerId);
-            actorResources.put(actorId, request.getResourceRequest());
+            instanceContainers.put(instanceId, containerId);
+            instanceResources.put(instanceId, request.getResourceRequest());
 
-            log.info("Docker Actor 部署成功: actorId={}, containerId={}", actorId, containerId);
+            log.info("Docker 实例部署成功: instanceId={}, containerId={}", instanceId, containerId);
 
-            return DeployActorResponse.newBuilder()
-                    .setActor(ActorInfo.newBuilder()
-                            .setActorId(actorId)
-                            .setStatus(ActorStatus.RUNNING)
+            return DeployInstanceResponse.newBuilder()
+                    .setInstance(InstanceInfo.newBuilder()
+                            .setInstanceId(instanceId)
+                            .setStatus(InstanceStatus.RUNNING)
                             .build())
                     .build();
 
         } catch (Exception e) {
-            log.error("Docker Actor 部署失败: actorId={}", actorId, e);
-            return DeployActorResponse.newBuilder()
-                    .setActor(ActorInfo.newBuilder()
-                            .setActorId(actorId)
-                            .setStatus(ActorStatus.FAILED)
+            log.error("Docker 实例部署失败: instanceId={}", instanceId, e);
+            return DeployInstanceResponse.newBuilder()
+                    .setInstance(InstanceInfo.newBuilder()
+                            .setInstanceId(instanceId)
+                            .setStatus(InstanceStatus.FAILED)
                             .setMessage(e.getMessage())
                             .build())
                     .build();
@@ -190,22 +156,22 @@ public class DockerEngine implements ResourceEngine {
     }
 
     @Override
-    public StopActorResponse stopActor(String actorId) {
-        String containerId = actorContainers.get(actorId);
+    public StopInstanceResponse stopInstance(String instanceId) {
+        String containerId = instanceContainers.get(instanceId);
         if (containerId == null) {
-            return StopActorResponse.newBuilder()
+            return StopInstanceResponse.newBuilder()
                     .setSuccess(false)
-                    .setMessage("未找到 Actor: " + actorId)
+                    .setMessage("未找到实例: " + instanceId)
                     .build();
         }
 
         try {
             dockerClient.stopContainerCmd(containerId).withTimeout(10).exec();
-            log.info("Docker Actor 已停止: actorId={}", actorId);
-            return StopActorResponse.newBuilder().setSuccess(true).build();
+            log.info("Docker 实例已停止: instanceId={}", instanceId);
+            return StopInstanceResponse.newBuilder().setSuccess(true).build();
         } catch (Exception e) {
-            log.error("停止 Docker Actor 失败: actorId={}", actorId, e);
-            return StopActorResponse.newBuilder()
+            log.error("停止 Docker 实例失败: instanceId={}", instanceId, e);
+            return StopInstanceResponse.newBuilder()
                     .setSuccess(false)
                     .setMessage(e.getMessage())
                     .build();
@@ -213,24 +179,24 @@ public class DockerEngine implements ResourceEngine {
     }
 
     @Override
-    public RemoveActorResponse removeActor(String actorId) {
-        String containerId = actorContainers.remove(actorId);
+    public RemoveInstanceResponse removeInstance(String instanceId) {
+        String containerId = instanceContainers.remove(instanceId);
         if (containerId == null) {
-            return RemoveActorResponse.newBuilder()
+            return RemoveInstanceResponse.newBuilder()
                     .setSuccess(false)
-                    .setMessage("未找到 Actor: " + actorId)
+                    .setMessage("未找到实例: " + instanceId)
                     .build();
         }
 
         try {
             dockerClient.removeContainerCmd(containerId).withForce(true).exec();
-            actorResources.remove(actorId);
-            log.info("Docker Actor 已移除: actorId={}", actorId);
-            return RemoveActorResponse.newBuilder().setSuccess(true).build();
+            instanceResources.remove(instanceId);
+            log.info("Docker 实例已移除: instanceId={}", instanceId);
+            return RemoveInstanceResponse.newBuilder().setSuccess(true).build();
         } catch (Exception e) {
-            log.error("移除 Docker Actor 失败: actorId={}", actorId, e);
-            actorContainers.put(actorId, containerId);
-            return RemoveActorResponse.newBuilder()
+            log.error("移除 Docker 实例失败: instanceId={}", instanceId, e);
+            instanceContainers.put(instanceId, containerId);
+            return RemoveInstanceResponse.newBuilder()
                     .setSuccess(false)
                     .setMessage(e.getMessage())
                     .build();
@@ -238,33 +204,33 @@ public class DockerEngine implements ResourceEngine {
     }
 
     @Override
-    public GetActorStatusResponse getActorStatus(String actorId) {
-        String containerId = actorContainers.get(actorId);
+    public GetInstanceStatusResponse getInstanceStatus(String instanceId) {
+        String containerId = instanceContainers.get(instanceId);
         if (containerId == null) {
-            return GetActorStatusResponse.newBuilder()
-                    .setActor(ActorInfo.newBuilder()
-                            .setActorId(actorId)
-                            .setStatus(ActorStatus.ACTOR_STATUS_UNSPECIFIED)
-                            .setMessage("未找到 Actor")
+            return GetInstanceStatusResponse.newBuilder()
+                    .setInstance(InstanceInfo.newBuilder()
+                            .setInstanceId(instanceId)
+                            .setStatus(InstanceStatus.INSTANCE_STATUS_UNSPECIFIED)
+                            .setMessage("未找到实例")
                             .build())
                     .build();
         }
 
         try {
             InspectContainerResponse inspect = dockerClient.inspectContainerCmd(containerId).exec();
-            ActorStatus status = mapContainerStatus(inspect.getState());
+            InstanceStatus status = mapContainerStatus(inspect.getState());
 
-            return GetActorStatusResponse.newBuilder()
-                    .setActor(ActorInfo.newBuilder()
-                            .setActorId(actorId)
+            return GetInstanceStatusResponse.newBuilder()
+                    .setInstance(InstanceInfo.newBuilder()
+                            .setInstanceId(instanceId)
                             .setStatus(status)
                             .build())
                     .build();
         } catch (Exception e) {
-            return GetActorStatusResponse.newBuilder()
-                    .setActor(ActorInfo.newBuilder()
-                            .setActorId(actorId)
-                            .setStatus(ActorStatus.FAILED)
+            return GetInstanceStatusResponse.newBuilder()
+                    .setInstance(InstanceInfo.newBuilder()
+                            .setInstanceId(instanceId)
+                            .setStatus(InstanceStatus.FAILED)
                             .setMessage(e.getMessage())
                             .build())
                     .build();
@@ -280,8 +246,7 @@ public class DockerEngine implements ResourceEngine {
     // ======================== 内部方法 ========================
 
     @SuppressWarnings("ConstantValue")
-    private HostConfig buildHostConfig(DeployActorRequest request, Path artifactLocalPath,
-                                       Path functionDescriptorPath, boolean hasConditions) {
+    private HostConfig buildHostConfig(DeployInstanceRequest request, Path artifactLocalPath) {
         ResourceSpec resource = request.getResourceRequest();
         HostConfig hostConfig = HostConfig.newHostConfig();
 
@@ -296,15 +261,9 @@ public class DockerEngine implements ResourceEngine {
             Path hostDir = artifactLocalPath.getParent();
             binds.add(new Bind(hostDir.toAbsolutePath().toString(), new Volume(CONTAINER_ARTIFACT_DIR)));
         }
-        if (functionDescriptorPath != null && java.nio.file.Files.isRegularFile(functionDescriptorPath)) {
-            String hostDir = functionDescriptorPath.getParent().toAbsolutePath().toString();
-            binds.add(new Bind(hostDir, new Volume(CONTAINER_FUNCTION_DIR)));
-        }
-        if (hasConditions && functionDescriptorPath == null) {
-            Path actorFunctionDir = artifactStore.getActorFunctionDir(request.getActorId());
-            if (java.nio.file.Files.isDirectory(actorFunctionDir)) {
-                binds.add(new Bind(actorFunctionDir.toAbsolutePath().toString(), new Volume(CONTAINER_FUNCTION_DIR)));
-            }
+        Path functionDir = artifactStore.getActorFunctionDir(request.getInstanceId());
+        if (java.nio.file.Files.isDirectory(functionDir)) {
+            binds.add(new Bind(functionDir.toAbsolutePath().toString(), new Volume(CONTAINER_FUNCTION_DIR)));
         }
         if (!binds.isEmpty()) {
             hostConfig.withBinds(binds);
@@ -329,23 +288,23 @@ public class DockerEngine implements ResourceEngine {
         return digits.isEmpty() ? 0L : Long.parseLong(digits);
     }
 
-    private ActorStatus mapContainerStatus(InspectContainerResponse.ContainerState state) {
-        if (state == null) return ActorStatus.ACTOR_STATUS_UNSPECIFIED;
+    private InstanceStatus mapContainerStatus(InspectContainerResponse.ContainerState state) {
+        if (state == null) return InstanceStatus.INSTANCE_STATUS_UNSPECIFIED;
         Boolean running = state.getRunning();
-        if (Boolean.TRUE.equals(running)) return ActorStatus.RUNNING;
+        if (Boolean.TRUE.equals(running)) return InstanceStatus.RUNNING;
         Boolean dead = state.getDead();
-        if (Boolean.TRUE.equals(dead)) return ActorStatus.FAILED;
+        if (Boolean.TRUE.equals(dead)) return InstanceStatus.FAILED;
         String status = state.getStatus();
         if (status != null) {
             return switch (status.toLowerCase()) {
-                case "created" -> ActorStatus.PENDING;
-                case "running" -> ActorStatus.RUNNING;
-                case "paused", "exited" -> ActorStatus.STOPPED;
-                case "dead" -> ActorStatus.FAILED;
-                case "removing" -> ActorStatus.REMOVED;
-                default -> ActorStatus.ACTOR_STATUS_UNSPECIFIED;
+                case "created" -> InstanceStatus.PENDING;
+                case "running" -> InstanceStatus.RUNNING;
+                case "paused", "exited" -> InstanceStatus.STOPPED;
+                case "dead" -> InstanceStatus.FAILED;
+                case "removing" -> InstanceStatus.REMOVED;
+                default -> InstanceStatus.INSTANCE_STATUS_UNSPECIFIED;
             };
         }
-        return ActorStatus.ACTOR_STATUS_UNSPECIFIED;
+        return InstanceStatus.INSTANCE_STATUS_UNSPECIFIED;
     }
 }

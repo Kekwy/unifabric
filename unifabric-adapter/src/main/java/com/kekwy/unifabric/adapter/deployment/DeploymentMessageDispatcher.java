@@ -59,37 +59,37 @@ public class DeploymentMessageDispatcher implements StreamObserver<DeploymentEnv
         String correlationId = (messageId != null && !messageId.isEmpty()) ? messageId : envelope.getCorrelationId();
 
         switch (envelope.getMessageCase()) {
-            case DEPLOY_ACTOR_REQUEST:
-                log.info("收到部署请求: messageId={}, actorId={}", messageId, envelope.getDeployActorRequest().getActorId());
-                DeployActorResponse deployResp = service.deployActor(envelope.getDeployActorRequest());
+            case DEPLOY_INSTANCE_REQUEST:
+                log.info("收到部署请求: messageId={}, instanceId={}", messageId, envelope.getDeployInstanceRequest().getInstanceId());
+                DeployInstanceResponse deployResp = service.deployInstance(envelope.getDeployInstanceRequest());
                 return DeploymentEnvelope.newBuilder()
                         .setCorrelationId(correlationId)
                         .setMessageId(messageId)
-                        .setDeployActorResponse(deployResp)
+                        .setDeployInstanceResponse(deployResp)
                         .build();
 
-            case STOP_ACTOR_REQUEST:
-                StopActorResponse stopResp = service.stopActor(envelope.getStopActorRequest());
+            case STOP_INSTANCE_REQUEST:
+                StopInstanceResponse stopResp = service.stopInstance(envelope.getStopInstanceRequest());
                 return DeploymentEnvelope.newBuilder()
                         .setCorrelationId(correlationId)
                         .setMessageId(messageId)
-                        .setStopActorResponse(stopResp)
+                        .setStopInstanceResponse(stopResp)
                         .build();
 
-            case REMOVE_ACTOR_REQUEST:
-                RemoveActorResponse removeResp = service.removeActor(envelope.getRemoveActorRequest());
+            case REMOVE_INSTANCE_REQUEST:
+                RemoveInstanceResponse removeResp = service.removeInstance(envelope.getRemoveInstanceRequest());
                 return DeploymentEnvelope.newBuilder()
                         .setCorrelationId(correlationId)
                         .setMessageId(messageId)
-                        .setRemoveActorResponse(removeResp)
+                        .setRemoveInstanceResponse(removeResp)
                         .build();
 
-            case GET_ACTOR_STATUS_REQUEST:
-                GetActorStatusResponse statusResp = service.getActorStatus(envelope.getGetActorStatusRequest());
+            case GET_INSTANCE_STATUS_REQUEST:
+                GetInstanceStatusResponse statusResp = service.getInstanceStatus(envelope.getGetInstanceStatusRequest());
                 return DeploymentEnvelope.newBuilder()
                         .setCorrelationId(correlationId)
                         .setMessageId(messageId)
-                        .setGetActorStatusResponse(statusResp)
+                        .setGetInstanceStatusResponse(statusResp)
                         .build();
 
             default:

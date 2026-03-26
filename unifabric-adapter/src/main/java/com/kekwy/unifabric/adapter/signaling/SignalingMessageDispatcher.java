@@ -29,8 +29,8 @@ public class SignalingMessageDispatcher implements StreamObserver<SignalingEnvel
         if (value == null) return;
 
         switch (value.getPayloadCase()) {
-            case ACTOR_MESSAGE_FORWARD:
-                service.forwardEnvelopeToActor(value.getActorMessageForward());
+            case INSTANCE_MESSAGE_FORWARD:
+                service.forwardEnvelopeToInstance(value.getInstanceMessageForward());
                 break;
             case CONNECT_INSTRUCTION:
                 service.handleConnectInstruction(value.getConnectInstruction());
@@ -38,11 +38,11 @@ public class SignalingMessageDispatcher implements StreamObserver<SignalingEnvel
             case ICE_ENVELOPE:
                 service.handleIceEnvelope(value.getIceEnvelope());
                 break;
-            case ACTOR_READY:
+            case INSTANCE_READY:
                 responseObserver.onNext(value);
                 break;
             case CANDIDATE_UPDATE:
-            case ACTOR_CHANNEL:
+            case INSTANCE_CHANNEL:
             default:
                 log.debug("SignalingChannel 收到: {}", value.getPayloadCase());
         }

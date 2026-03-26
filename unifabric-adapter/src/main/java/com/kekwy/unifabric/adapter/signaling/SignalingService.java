@@ -4,10 +4,10 @@ import com.kekwy.unifabric.adapter.actor.ActorRouter;
 import com.kekwy.unifabric.adapter.config.AdapterIdentity;
 import com.kekwy.unifabric.adapter.registry.DelegatingObserver;
 import com.kekwy.unifabric.adapter.registry.AdapterRegistryClient;
-import com.kekwy.unifabric.proto.provider.ActorMessageForward;
+import com.kekwy.unifabric.proto.provider.InstanceMessageForward;
 import com.kekwy.unifabric.proto.fabric.ProviderRegistryServiceGrpc;
-import com.kekwy.unifabric.proto.provider.ActorChannelStatus;
-import com.kekwy.unifabric.proto.provider.ActorReadyReport;
+import com.kekwy.unifabric.proto.provider.InstanceChannelStatus;
+import com.kekwy.unifabric.proto.provider.InstanceReadyReport;
 import com.kekwy.unifabric.proto.provider.ConnectInstruction;
 import com.kekwy.unifabric.proto.provider.IceEnvelope;
 import com.kekwy.unifabric.proto.provider.SignalingEnvelope;
@@ -128,12 +128,12 @@ public class SignalingService {
 
     // --- 业务方法，供 SignalingMessageDispatcher 委托调用 ---
 
-    /** 跨 Provider 转发：从 ActorMessageForward 取 target 与 envelope，投递到本地 actor。 */
-    public void forwardEnvelopeToActor(ActorMessageForward forward) {
+    /** 跨 Provider 转发：从 InstanceMessageForward 取 target 与 envelope，投递到本地实例。 */
+    public void forwardEnvelopeToInstance(InstanceMessageForward forward) {
         if (forward == null) return;
         String targetActorId = forward.getTarget();
         if (targetActorId == null || targetActorId.isBlank()) {
-            log.warn("ActorMessageForward 缺少 target，无法转发");
+            log.warn("InstanceMessageForward 缺少 target，无法转发");
             return;
         }
         actorRouter.deliverToTarget(targetActorId, forward.getActorEnvelope());
@@ -153,10 +153,10 @@ public class SignalingService {
         SignalingEnvelope msg = SignalingEnvelope.newBuilder()
                 .setProviderId(providerId != null ? providerId : "")
                 .setTimestampMs(System.currentTimeMillis())
-                .setActorReady(ActorReadyReport.newBuilder().setActorId(actorId).build())
+                .setInstanceReady(InstanceReadyReport.newBuilder().setInstanceId(actorId).build())
                 .build();
-        if (!sendOrEnqueue(msg, "ActorReadyReport", actorId)) {
-            log.debug("SignalingChannel 未就绪，ActorReadyReport 已入队: actorId={}", actorId);
+        if (!sendOrEnqueue(msg, "InstanceReadyReport", actorId)) {
+            log.debug("SignalingChannel 未就绪，InstanceReadyReport 已入队: actorId={}", actorId);
         }
     }
 
@@ -166,16 +166,16 @@ public class SignalingService {
         SignalingEnvelope msg = SignalingEnvelope.newBuilder()
                 .setProviderId(providerId != null ? providerId : "")
                 .setTimestampMs(System.currentTimeMillis())
-                .setActorChannel(ActorChannelStatus.newBuilder()
+                .setInstanceChannel(InstanceChannelStatus.newBuilder()
                         .setWorkflowId("")
                         .setApplicationId("")
-                        .setSrcActorAddr(srcActorId)
-                        .setDstActorAddr(dstActorId)
+                        .setSrcInstanceAddr(srcActorId)
+                        .setDstInstanceAddr(dstActorId)
                         .setConnected(true)
                         .build())
                 .build();
-        if (!sendOrEnqueue(msg, "ActorChannelStatus", srcActorId + "->" + dstActorId)) {
-            log.debug("SignalingChannel 未就绪，ActorChannelStatus 已入队: src={}, dst={}", srcActorId, dstActorId);
+        if (!sendOrEnqueue(msg, "InstanceChannelStatus", srcActorId + "->" + dstActorId)) {
+            log.debug("SignalingChannel 未就绪，InstanceChannelStatus 已入队: src={}, dst={}", srcActorId, dstActorId);
         }
     }
 
