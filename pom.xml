@@ -12,8 +12,9 @@
     <description>unifabric parent project</description>
 
     <modules>
-        <module>unifabric-manager</module>
+        <module>unifabric-protos/unifabric-proto-java</module>
         <module>unifabric-common</module>
+        <module>unifabric-manager</module>
         <module>unifabric-adapter</module>
     </modules>
 

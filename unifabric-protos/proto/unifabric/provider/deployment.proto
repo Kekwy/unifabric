@@ -1,10 +1,8 @@
 syntax = "proto3";
 
-package iarnet.provider;
+package unifabric.provider;
 
-import "iarnet/common/function.proto";
-import "iarnet/common/resource.proto";
-import "iarnet/workflow/workflow.proto";
+import "unifabric/common/resource.proto";
 
 option java_package = "com.kekwy.unifabric.proto.provider";
 option java_multiple_files = true;
@@ -12,6 +10,7 @@ option java_multiple_files = true;
 message DeploymentEnvelope {
   string message_id = 1;
   string correlation_id = 2;
+  string error = 11;
 
   oneof message {
     DeployInstanceRequest deploy_instance_request = 3;
@@ -23,47 +22,21 @@ message DeploymentEnvelope {
     GetInstanceStatusRequest get_instance_status_request = 9;
     GetInstanceStatusResponse get_instance_status_response = 10;
   }
-
 }
 
-enum RoutingStrategy {
-  ROUTING_STRATEGY_UNSPECIFIED = 0;
-  ROUND_ROBIN = 1;
-  HASH_BY_ROW_ID = 2;
-}
-
-message DownstreamGroup {
-  string logical_operator_id = 1;   // 逻辑算子标识（如 node id）
-  repeated string instance_addrs = 2;  // 该逻辑算子的所有物理实例地址（有序）
-  RoutingStrategy routing_strategy = 3;
-  int32 output_port = 4;            // 对应实例的哪个输出端口
-  optional iarnet.common.FunctionDescriptor condition_function = 5;  // 该端口对应的条件函数；output_port=0 可不设
-  int32 input_port  = 6;            // 下游节点的输入端口
-}
-
+// 通用部署请求（资源平台层，不含上层框架语义）
 message DeployInstanceRequest {
-  // ----------- 通用字段（资源平台层） -----------
-  string instance_id = 1;                     // 实例唯一标识（由 control-plane 生成）
-  string image = 2;                           // 目标镜像（由上层运行时或框架决定）
-  iarnet.common.ResourceSpec resource_request = 3; // 资源需求
-  map<string, string> env = 4;                // 环境变量
-  map<string, string> labels = 5;             // 标签
-  string artifact_url = 6;                    // artifact 拉取地址（可选）
-
-  // ----------- 兼容字段（Actor 运行时扩展） -----------
-  iarnet.common.Lang lang = 11;
-  repeated string upstream_instance_addrs = 12;
-  iarnet.common.FunctionDescriptor function_descriptor = 13;
-  int32 instance_index = 14;
-  repeated DownstreamGroup downstream_groups = 15;
-  iarnet.workflow.NodeKind node_kind = 16;
+  string instance_id = 1;
+  string image = 2;
+  unifabric.common.ResourceSpec resource_request = 3;
+  map<string, string> env = 4;
+  map<string, string> labels = 5;
+  string artifact_url = 6;
 }
 
 message DeployInstanceResponse {
   InstanceInfo instance = 1;
 }
-
-// ======================== Instance 管理 ========================
 
 message StopInstanceRequest {
   string instance_id = 1;
@@ -91,27 +64,24 @@ message GetInstanceStatusResponse {
   InstanceInfo instance = 1;
 }
 
-// ======================== 通用类型 ========================
-
-// 资源容量：描述设备总资源、已使用、可用
-message ResourceCapacity {
-  iarnet.common.ResourceSpec total     = 1;
-  iarnet.common.ResourceSpec used      = 2;
-  iarnet.common.ResourceSpec available = 3;
+// 实例在 Provider 本地容器网络中的可达端点（论文 3.5.2）
+message InstanceEndpoint {
+  string host = 1;
+  int32  port = 2;
 }
 
-// 实例信息
 message InstanceInfo {
-  string         instance_id  = 1;
-  InstanceStatus status       = 2;
-  string         message      = 3;  // 状态描述或错误信息
+  string           instance_id    = 1;
+  InstanceStatus   status         = 2;
+  string           message        = 3;
+  InstanceEndpoint local_endpoint = 4;
 }
 
 enum InstanceStatus {
   INSTANCE_STATUS_UNSPECIFIED = 0;
-  PENDING                    = 1;  // 正在创建
-  RUNNING                    = 2;  // 运行中
-  STOPPED                    = 3;  // 已停止（可重启）
-  FAILED                     = 4;  // 启动或运行失败
-  REMOVED                    = 5;  // 已移除
+  PENDING                    = 1;
+  RUNNING                    = 2;
+  STOPPED                    = 3;
+  FAILED                     = 4;
+  REMOVED                    = 5;
 }

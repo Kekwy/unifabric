@@ -1,5 +1,6 @@
 package com.kekwy.unifabric.adapter.deployment;
 
+import com.kekwy.unifabric.adapter.signaling.SignalingService;
 import com.kekwy.unifabric.proto.provider.*;
 import io.grpc.stub.StreamObserver;
 import org.slf4j.Logger;
@@ -15,13 +16,16 @@ public class DeploymentMessageDispatcher implements StreamObserver<DeploymentEnv
     private static final Logger log = LoggerFactory.getLogger(DeploymentMessageDispatcher.class);
 
     private final DeploymentService service;
+    private final SignalingService signalingService;
     private final StreamObserver<DeploymentEnvelope> responseObserver;
     private final Runnable onDisconnect;
 
     public DeploymentMessageDispatcher(DeploymentService service,
+                                       SignalingService signalingService,
                                        StreamObserver<DeploymentEnvelope> responseObserver,
                                        Runnable onDisconnect) {
         this.service = service;
+        this.signalingService = signalingService;
         this.responseObserver = responseObserver;
         this.onDisconnect = onDisconnect;
     }
@@ -62,6 +66,7 @@ public class DeploymentMessageDispatcher implements StreamObserver<DeploymentEnv
             case DEPLOY_INSTANCE_REQUEST:
                 log.info("收到部署请求: messageId={}, instanceId={}", messageId, envelope.getDeployInstanceRequest().getInstanceId());
                 DeployInstanceResponse deployResp = service.deployInstance(envelope.getDeployInstanceRequest());
+                maybeReportEndpoint(deployResp);
                 return DeploymentEnvelope.newBuilder()
                         .setCorrelationId(correlationId)
                         .setMessageId(messageId)
@@ -95,6 +100,28 @@ public class DeploymentMessageDispatcher implements StreamObserver<DeploymentEnv
             default:
                 log.debug("忽略 DeploymentEnvelope: {}", envelope.getMessageCase());
                 return null;
+        }
+    }
+
+    private void maybeReportEndpoint(DeployInstanceResponse deployResp) {
+        if (signalingService == null || deployResp == null || !deployResp.hasInstance()) {
+            return;
+        }
+        InstanceInfo inst = deployResp.getInstance();
+        if (inst.getStatus() != InstanceStatus.RUNNING) {
+            return;
+        }
+        String instanceId = inst.getInstanceId();
+        if (instanceId == null || instanceId.isBlank()) {
+            return;
+        }
+        if (inst.hasLocalEndpoint()) {
+            signalingService.reportInstanceEndpoint(instanceId, inst.getLocalEndpoint());
+            return;
+        }
+        InstanceEndpoint ep = service.tryGetInstanceEndpoint(instanceId);
+        if (ep != null) {
+            signalingService.reportInstanceEndpoint(instanceId, ep);
         }
     }
 }

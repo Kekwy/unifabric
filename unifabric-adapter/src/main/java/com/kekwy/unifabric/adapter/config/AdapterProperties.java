@@ -15,28 +15,22 @@ public class AdapterProperties {
     private String zone = "";
     private Registry registry = new Registry();
     private List<String> tags = List.of();
-    private ResourceConfig resource = new ResourceConfig();
-    /** 默认使用用户目录，避免 /tmp 在 WSL 等环境下无写权限 */
     private String artifactDir = System.getProperty("user.home") + "/.unifabric-adapter/artifacts";
     private DockerConfig docker = new DockerConfig();
     private K8sConfig k8s = new K8sConfig();
-    private ActorRegistry actorRegistry = new ActorRegistry();
+    /** 论文 3.5：TCP 代理监听端口区间；min=0 表示仅用系统临时端口 */
+    private Connectivity connectivity = new Connectivity();
 
-    // ===== 嵌套配置类 =====
+    @Data
+    public static class Connectivity {
+        private int proxyPortMin = 0;
+        private int proxyPortMax = 0;
+    }
 
     @Data
     public static class Registry {
         private String host = "127.0.0.1";
         private int port = 9090;
-
-    }
-
-    @Data
-    public static class ResourceConfig {
-        private double cpu = 4.0;
-        private String memory = "8Gi";
-        private double gpu = 0;
-
     }
 
     @Data
@@ -50,10 +44,5 @@ public class AdapterProperties {
         private String kubeconfig = "";
         private boolean inCluster = false;
         private String namespace = "default";
-    }
-
-    @Data
-    public static class ActorRegistry {
-        private int port = 10000;
     }
 }

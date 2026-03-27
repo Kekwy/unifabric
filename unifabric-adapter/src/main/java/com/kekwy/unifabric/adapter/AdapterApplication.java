@@ -8,7 +8,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 /**
  * 资源适配器启动入口。
  * <p>
- * Actor 注册 gRPC Server、AdapterRegistryClient、ResourceEngine 等由
+ * AdapterRegistryClient、{@link com.kekwy.unifabric.adapter.provider.ResourceProvider} 等由
  * {@link com.kekwy.unifabric.adapter.config.AdapterRuntimeConfig} 提供并纳入 Spring 管理。
  */
 @SpringBootApplication

@@ -1,6 +1,37 @@
 syntax = "proto3";
 
-package iarnet.fabric;
+package unifabric.fabric;
+
+import "unifabric/common/resource.proto";
+import "unifabric/provider/deployment.proto";
 
 option java_package = "com.kekwy.unifabric.proto.fabric";
 option java_multiple_files = true;
+
+// 调度硬约束：平台类型与能力标签（论文 3.4.3 Filter 阶段）
+message ScheduleConstraints {
+  // 为空表示不限制；非空则 Provider 的 provider_type 须匹配（大小写敏感由实现约定）
+  string provider_type = 1;
+  // 请求声明的能力标签，须被 Provider 标签集合包含（子集关系）
+  repeated string required_tags = 2;
+}
+
+// 跨域/域内统一的调度部署请求
+message ScheduleDeployRequest {
+  string request_id = 1;
+  unifabric.common.ResourceSpec demand = 2;
+  string image = 3;
+  ScheduleConstraints constraints = 4;
+  map<string, string> env = 5;
+  map<string, string> labels = 6;
+  string artifact_url = 7;
+  // 发起方域 ID，远程域可用于审计；可选
+  string originating_domain_id = 8;
+}
+
+message ScheduleDeployResponse {
+  bool success = 1;
+  string target_provider_id = 2;
+  unifabric.provider.InstanceInfo instance = 3;
+  string error_message = 4;
+}

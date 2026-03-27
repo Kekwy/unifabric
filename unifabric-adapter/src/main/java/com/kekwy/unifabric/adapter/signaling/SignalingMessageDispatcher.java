@@ -6,21 +6,17 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * SignalingChannel 消息分发：仅负责按 payloadCase 委托 SignalingService；ACTOR_READY 直接回传。
+ * SignalingChannel 入站消息分发。
  */
 public class SignalingMessageDispatcher implements StreamObserver<SignalingEnvelope> {
 
     private static final Logger log = LoggerFactory.getLogger(SignalingMessageDispatcher.class);
 
     private final SignalingService service;
-    private final StreamObserver<SignalingEnvelope> responseObserver;
     private final Runnable onDisconnect;
 
-    public SignalingMessageDispatcher(SignalingService service,
-                                     StreamObserver<SignalingEnvelope> responseObserver,
-                                     Runnable onDisconnect) {
+    public SignalingMessageDispatcher(SignalingService service, Runnable onDisconnect) {
         this.service = service;
-        this.responseObserver = responseObserver;
         this.onDisconnect = onDisconnect;
     }
 
@@ -29,20 +25,23 @@ public class SignalingMessageDispatcher implements StreamObserver<SignalingEnvel
         if (value == null) return;
 
         switch (value.getPayloadCase()) {
-            case INSTANCE_MESSAGE_FORWARD:
-                service.forwardEnvelopeToInstance(value.getInstanceMessageForward());
-                break;
             case CONNECT_INSTRUCTION:
                 service.handleConnectInstruction(value.getConnectInstruction());
                 break;
             case ICE_ENVELOPE:
                 service.handleIceEnvelope(value.getIceEnvelope());
                 break;
-            case INSTANCE_READY:
-                responseObserver.onNext(value);
-                break;
             case CANDIDATE_UPDATE:
-            case INSTANCE_CHANNEL:
+                service.handleCandidateUpdate(value.getCandidateUpdate());
+                break;
+            case RESOLVE_ENDPOINT_RESPONSE:
+                service.handleResolveEndpointResponse(value.getResolveEndpointResponse());
+                break;
+            case RESOLVE_ENDPOINT_REQUEST:
+            case INSTANCE_ENDPOINT_REPORT:
+            case INSTANCE_STATUS_CHANGED:
+                log.debug("SignalingChannel 收到（通常为本端上行类型）: {}", value.getPayloadCase());
+                break;
             default:
                 log.debug("SignalingChannel 收到: {}", value.getPayloadCase());
         }

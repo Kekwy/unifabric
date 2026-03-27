@@ -29,6 +29,11 @@ public class ProviderConnection {
     private volatile StreamObserver<SignalingEnvelope> signalingSender;
     private volatile StreamObserver<ControlEnvelope> controlSender;
 
+    /** 论文 3.2.2：各通道独立连通性，用于 Online / Degraded 判定 */
+    private volatile boolean controlConnected;
+    private volatile boolean deploymentConnected;
+    private volatile boolean signalingConnected;
+
     private final ConcurrentHashMap<String, CompletableFuture<DeploymentEnvelope>> pendingDeployments =
             new ConcurrentHashMap<>();
 
@@ -159,6 +164,40 @@ public class ProviderConnection {
         return controlSender;
     }
 
+    public void setControlConnected(boolean controlConnected) {
+        this.controlConnected = controlConnected;
+    }
+
+    public boolean isControlConnected() {
+        return controlConnected;
+    }
+
+    public void setDeploymentConnected(boolean deploymentConnected) {
+        this.deploymentConnected = deploymentConnected;
+    }
+
+    public boolean isDeploymentConnected() {
+        return deploymentConnected;
+    }
+
+    public void setSignalingConnected(boolean signalingConnected) {
+        this.signalingConnected = signalingConnected;
+    }
+
+    public boolean isSignalingConnected() {
+        return signalingConnected;
+    }
+
+    /** 三通道均已建立 */
+    public boolean isFullyConnected() {
+        return controlConnected && deploymentConnected && signalingConnected;
+    }
+
+    /** 至少一通道已建立且未全部就绪 */
+    public boolean isPartiallyConnected() {
+        return controlConnected || deploymentConnected || signalingConnected;
+    }
+
     public void sendControl(ControlEnvelope envelope) {
         StreamObserver<ControlEnvelope> sender = this.controlSender;
         if (sender == null) {
@@ -178,6 +217,9 @@ public class ProviderConnection {
     public void close() {
         if (closed) return;
         closed = true;
+        controlConnected = false;
+        deploymentConnected = false;
+        signalingConnected = false;
 
         RuntimeException cause = new RuntimeException("ProviderConnection 已关闭: " + providerId);
         pendingDeployments.values().forEach(f -> f.completeExceptionally(cause));

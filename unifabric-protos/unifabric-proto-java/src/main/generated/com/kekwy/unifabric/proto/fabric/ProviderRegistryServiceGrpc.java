@@ -5,14 +5,14 @@ import static io.grpc.MethodDescriptor.generateFullMethodName;
 /**
  */
 @javax.annotation.Generated(
-    value = "by gRPC proto compiler (version 1.62.2)",
-    comments = "Source: iarnet/fabric/provider_registration.proto")
+    value = "by gRPC proto compiler (version 1.64.0)",
+    comments = "Source: unifabric/fabric/provider_registration.proto")
 @io.grpc.stub.annotations.GrpcGenerated
 public final class ProviderRegistryServiceGrpc {
 
   private ProviderRegistryServiceGrpc() {}
 
-  public static final java.lang.String SERVICE_NAME = "iarnet.fabric.ProviderRegistryService";
+  public static final java.lang.String SERVICE_NAME = "unifabric.fabric.ProviderRegistryService";
 
   // Static method descriptors that strictly reflect the proto.
   private static volatile io.grpc.MethodDescriptor<com.kekwy.unifabric.proto.provider.RegisterProviderRequest,
@@ -188,9 +188,6 @@ public final class ProviderRegistryServiceGrpc {
   public interface AsyncService {
 
     /**
-     * <pre>
-     * Provider 启动后主动向控制平面注册，获取全局唯一的 provider_id。
-     * </pre>
      */
     default void registerProvider(com.kekwy.unifabric.proto.provider.RegisterProviderRequest request,
         io.grpc.stub.StreamObserver<com.kekwy.unifabric.proto.provider.RegisterProviderResponse> responseObserver) {
@@ -247,9 +244,6 @@ public final class ProviderRegistryServiceGrpc {
     }
 
     /**
-     * <pre>
-     * Provider 启动后主动向控制平面注册，获取全局唯一的 provider_id。
-     * </pre>
      */
     public void registerProvider(com.kekwy.unifabric.proto.provider.RegisterProviderRequest request,
         io.grpc.stub.StreamObserver<com.kekwy.unifabric.proto.provider.RegisterProviderResponse> responseObserver) {
@@ -299,9 +293,6 @@ public final class ProviderRegistryServiceGrpc {
     }
 
     /**
-     * <pre>
-     * Provider 启动后主动向控制平面注册，获取全局唯一的 provider_id。
-     * </pre>
      */
     public com.kekwy.unifabric.proto.provider.RegisterProviderResponse registerProvider(com.kekwy.unifabric.proto.provider.RegisterProviderRequest request) {
       return io.grpc.stub.ClientCalls.blockingUnaryCall(
@@ -326,9 +317,6 @@ public final class ProviderRegistryServiceGrpc {
     }
 
     /**
-     * <pre>
-     * Provider 启动后主动向控制平面注册，获取全局唯一的 provider_id。
-     * </pre>
      */
     public com.google.common.util.concurrent.ListenableFuture<com.kekwy.unifabric.proto.provider.RegisterProviderResponse> registerProvider(
         com.kekwy.unifabric.proto.provider.RegisterProviderRequest request) {

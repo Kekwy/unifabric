@@ -5,14 +5,14 @@ import static io.grpc.MethodDescriptor.generateFullMethodName;
 /**
  */
 @javax.annotation.Generated(
-    value = "by gRPC proto compiler (version 1.62.2)",
-    comments = "Source: iarnet/fabric/discovery_service.proto")
+    value = "by gRPC proto compiler (version 1.64.0)",
+    comments = "Source: unifabric/fabric/discovery_service.proto")
 @io.grpc.stub.annotations.GrpcGenerated
 public final class DiscoveryServiceGrpc {
 
   private DiscoveryServiceGrpc() {}
 
-  public static final java.lang.String SERVICE_NAME = "iarnet.fabric.DiscoveryService";
+  public static final java.lang.String SERVICE_NAME = "unifabric.fabric.DiscoveryService";
 
   // Static method descriptors that strictly reflect the proto.
   private static volatile io.grpc.MethodDescriptor<com.kekwy.unifabric.proto.fabric.NodeInfoGossipMessage,
@@ -95,11 +95,6 @@ public final class DiscoveryServiceGrpc {
   public interface AsyncService {
 
     /**
-     * <pre>
-     * 交换节点信息（gossip 协议）。
-     * 调用方将自己及部分已知节点信息打包到 NodeInfoGossipMessage 中，
-     * 接收方更新本地视图后，返回一批自己视角下的节点信息。
-     * </pre>
      */
     default void gossipNodeInfo(com.kekwy.unifabric.proto.fabric.NodeInfoGossipMessage request,
         io.grpc.stub.StreamObserver<com.kekwy.unifabric.proto.fabric.NodeInfoGossipResponse> responseObserver) {
@@ -135,11 +130,6 @@ public final class DiscoveryServiceGrpc {
     }
 
     /**
-     * <pre>
-     * 交换节点信息（gossip 协议）。
-     * 调用方将自己及部分已知节点信息打包到 NodeInfoGossipMessage 中，
-     * 接收方更新本地视图后，返回一批自己视角下的节点信息。
-     * </pre>
      */
     public void gossipNodeInfo(com.kekwy.unifabric.proto.fabric.NodeInfoGossipMessage request,
         io.grpc.stub.StreamObserver<com.kekwy.unifabric.proto.fabric.NodeInfoGossipResponse> responseObserver) {
@@ -165,11 +155,6 @@ public final class DiscoveryServiceGrpc {
     }
 
     /**
-     * <pre>
-     * 交换节点信息（gossip 协议）。
-     * 调用方将自己及部分已知节点信息打包到 NodeInfoGossipMessage 中，
-     * 接收方更新本地视图后，返回一批自己视角下的节点信息。
-     * </pre>
      */
     public com.kekwy.unifabric.proto.fabric.NodeInfoGossipResponse gossipNodeInfo(com.kekwy.unifabric.proto.fabric.NodeInfoGossipMessage request) {
       return io.grpc.stub.ClientCalls.blockingUnaryCall(
@@ -194,11 +179,6 @@ public final class DiscoveryServiceGrpc {
     }
 
     /**
-     * <pre>
-     * 交换节点信息（gossip 协议）。
-     * 调用方将自己及部分已知节点信息打包到 NodeInfoGossipMessage 中，
-     * 接收方更新本地视图后，返回一批自己视角下的节点信息。
-     * </pre>
      */
     public com.google.common.util.concurrent.ListenableFuture<com.kekwy.unifabric.proto.fabric.NodeInfoGossipResponse> gossipNodeInfo(
         com.kekwy.unifabric.proto.fabric.NodeInfoGossipMessage request) {

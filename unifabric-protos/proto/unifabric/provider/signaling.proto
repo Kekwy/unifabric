@@ -1,102 +1,95 @@
 syntax = "proto3";
 
-package iarnet.provider;
+package unifabric.provider;
 
-import "iarnet/actor/actor.proto";
+import "unifabric/provider/deployment.proto";
 
 option java_package = "com.kekwy.unifabric.proto.provider";
 option java_multiple_files = true;
 
-
-
-
-// ======================== 信令通道消息 ========================
-
+// 信令通道信封：身份由 gRPC metadata 的 provider-id 提供，不在每条消息中重复
 message SignalingEnvelope {
-  string provider_id    = 1;
-
-  // 发送时间（毫秒时间戳）
-  int64  timestamp_ms = 2;
+  string message_id = 1;
+  string correlation_id = 2;
+  int64  timestamp_ms = 3;
+  string error = 4;
 
   oneof payload {
     ConnectInstruction connect_instruction = 10;
     IceEnvelope        ice_envelope        = 11;
     CandidateUpdate    candidate_update    = 12;
-    InstanceChannelStatus instance_channel = 13;
-    InstanceReadyReport instance_ready = 14;
-    InstanceMessageForward instance_message_forward = 15;
+    InstanceStatusChanged instance_status_changed = 13;
+    ResolveEndpointRequest resolve_endpoint_request = 14;
+    ResolveEndpointResponse resolve_endpoint_response = 15;
+    InstanceEndpointReport instance_endpoint_report = 16;
   }
 }
 
-message InstanceMessageForward {
-  string target = 1; // 目标 instance id（由 Router 填写物理地址）
-  actor.ActorEnvelope actor_envelope = 2;
-}
-
-message InstanceReadyReport {
+// 容器级实例状态变更（异步上报）
+message InstanceStatusChanged {
   string instance_id = 1;
+  InstanceStatus previous_status = 2;
+  InstanceStatus current_status = 3;
+  string message = 4;
 }
 
-// 由 Provider 上报某条实例间通道的状态
-message InstanceChannelStatus {
-  string workflow_id     = 1;
-  string application_id  = 2;
-  string src_instance_addr  = 3;
-  string dst_instance_addr  = 4;
-  bool   connected       = 5; // true 表示该方向的通道已建立
-}
-
-// 控制平面下发的“建立连接”指令。
 message ConnectInstruction {
-  // 本次连接协商的唯一标识，用于在多次重试/候选交换中进行关联。
   string connect_id = 1;
-
-  // 源实例与目标实例的虚拟地址（逻辑标识）
   string src_instance_addr = 2;
   string dst_instance_addr = 3;
-
-  // 连接角色：true 表示本设备作为“主动发起方”（caller），false 为“被动应答方”（callee）。
   bool   initiator      = 4;
+  // 可选：对端 Provider、中继地址（跨域兜底，论文 3.5.3）
+  string peer_provider_id = 5;
+  string relay_host = 6;
+  int32  relay_port = 7;
 }
 
-// ICE 信令包，通过控制平面在 Provider 之间中转。
+// 适配器上报实例本地端点（论文 3.5.2）
+message InstanceEndpointReport {
+  string instance_id = 1;
+  InstanceEndpoint endpoint = 2;
+}
+
+// 请求解析目标实例的对外可达代理端点（可由适配器发起，论文 3.5.2–3.5.3）
+message ResolveEndpointRequest {
+  string message_id = 1;
+  string source_instance_id = 2;
+  string source_provider_id = 3;
+  string target_instance_id = 4;
+}
+
+message ResolveEndpointResponse {
+  string correlation_id = 1;
+  string connect_id = 2;
+  InstanceEndpoint proxy_endpoint = 3;
+  // LOCAL, INTRA_DOMAIN, CROSS_DOMAIN_TUNNEL, RELAY
+  string connectivity_tier = 4;
+  string error_message = 5;
+}
+
 message IceEnvelope {
   string connect_id    = 1;
-
-  // 源 Provider / 目标 Provider
   string from_provider_id = 2;
   string to_provider_id   = 3;
-
-  // 信令类型（例如: "offer" / "answer" / "candidate" / 自定义）
   string signal_type    = 5;
-
-  // 具体信令负载（SDP / candidate JSON / 自定义编码）
   bytes  signal_payload = 6;
 }
 
-// Provider 上报本机可用的网络候选信息（可选，用于控制平面构建全局视图）。
 message CandidateUpdate {
-  string provider_id = 1;
-
+  string connect_id = 1;
   repeated NetworkCandidate candidates = 2;
 }
 
-// 简化版网络候选，后续可扩展 STUN/TURN/优先级等字段。
 message NetworkCandidate {
   enum CandidateType {
     CANDIDATE_TYPE_UNSPECIFIED = 0;
-    DIRECT                     = 1; // 局域网直连地址
-    NAT_MAPPED                 = 2; // NAT 映射地址（经 STUN 探测）
-    RELAY                      = 3; // 中继地址（TURN / 中转服务器）
+    DIRECT                     = 1;
+    NAT_MAPPED                 = 2;
+    RELAY                      = 3;
   }
 
   CandidateType type = 1;
-
-  // 网络层地址信息
   string host = 2;
   int32  port = 3;
-
-  // 候选优先级，越大越优先
   int32  priority = 4;
 }
-

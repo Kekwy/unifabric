@@ -1,37 +1,39 @@
 package com.kekwy.unifabric.fabric.discovery;
 
-import com.kekwy.unifabric.proto.ir.Resource;
-import com.kekwy.unifabric.proto.resource.PeerNodeInfo;
-import com.kekwy.unifabric.proto.resource.ResourceCapacity;
+import com.kekwy.unifabric.fabric.provider.ProviderInfo;
+import com.kekwy.unifabric.fabric.provider.ProviderRegistry;
+import com.kekwy.unifabric.proto.common.ResourceCapacity;
+import com.kekwy.unifabric.proto.common.ResourceSpec;
+import com.kekwy.unifabric.proto.fabric.PeerNodeInfo;
 
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Collectors;
 
 /**
- * 节点发现与资源视图管理器（Java 版）。
+ * 节点发现与资源视图管理器。
  * <p>
- * 职责：
- * <ul>
- *   <li>维护本地节点信息（local node）</li>
- *   <li>维护已知的其它控制节点 {@link PeerNode}</li>
- *   <li>处理来自 Gossip RPC 的 {@link PeerNodeInfo} 列表，更新视图</li>
- *   <li>提供聚合资源视图（所有节点的总/已用/可用）</li>
- * </ul>
- *
- * 注意：本类不直接负责 gRPC 通信，只负责内存中的数据结构和合并规则。
- * gRPC 层会调用 {@link #processGossipNodes(List, String)} 等方法。
+ * {@link #refreshFromProviderRegistry(ProviderRegistry)} 将本域内 Provider 资源聚合为域级视图（论文 3.2.3）。
+ * {@link #processGossipNodes(List, String)} 按论文 3.3.2 版本化合并跨域 Gossip 条目。
  */
 public class NodeDiscoveryManager {
 
     private final String localNodeId;
     private final String domainId;
     private final Duration nodeTtl;
+    private final String advertiseAddress;
+
+    private final AtomicLong localViewVersion = new AtomicLong(0);
 
     private volatile PeerNode localNode;
 
@@ -39,27 +41,107 @@ public class NodeDiscoveryManager {
 
     public NodeDiscoveryManager(String localNodeId,
                                 String domainId,
-                                Duration nodeTtl) {
+                                Duration nodeTtl,
+                                String advertiseAddress) {
         this.localNodeId = Objects.requireNonNull(localNodeId, "localNodeId must not be null");
         this.domainId = domainId != null ? domainId : "";
         this.nodeTtl = nodeTtl != null ? nodeTtl : Duration.ofMinutes(5);
+        this.advertiseAddress = advertiseAddress != null ? advertiseAddress : "";
     }
 
-    // ======================== 本地节点 ========================
-
     /**
-     * 初始化或更新本地节点信息。
+     * 根据当前 Provider 注册表聚合本域资源容量并更新本地节点视图。
      */
+    public synchronized void refreshFromProviderRegistry(ProviderRegistry registry) {
+        if (registry == null) {
+            return;
+        }
+        long version = localViewVersion.incrementAndGet();
+        ResourceCapacity aggregated = aggregateProviderCapacities(registry);
+        List<String> tags = collectDistinctTags(registry);
+        updateLocalNode(localNodeId, advertiseAddress.isEmpty() ? localNodeId : advertiseAddress,
+                aggregated, tags, version);
+    }
+
+    private static ResourceCapacity aggregateProviderCapacities(ProviderRegistry registry) {
+        double totalCpu = 0;
+        double totalGpu = 0;
+        long totalMem = 0;
+        double usedCpu = 0;
+        double usedGpu = 0;
+        long usedMem = 0;
+
+        for (ProviderInfo p : registry.listProviders()) {
+            if (p.getStatus() != ProviderInfo.Status.ONLINE && p.getStatus() != ProviderInfo.Status.DEGRADED) {
+                continue;
+            }
+            ResourceCapacity c = p.getResourceCapacity();
+            if (c == null || ResourceCapacity.getDefaultInstance().equals(c)) {
+                continue;
+            }
+            ResourceSpec t = c.getTotal();
+            ResourceSpec u = c.getUsed();
+            if (t != null) {
+                totalCpu += t.getCpu();
+                totalGpu += t.getGpu();
+                totalMem += parseMemoryBytes(t.getMemory());
+            }
+            if (u != null) {
+                usedCpu += u.getCpu();
+                usedGpu += u.getGpu();
+                usedMem += parseMemoryBytes(u.getMemory());
+            }
+        }
+
+        long availableMem = Math.max(0, totalMem - usedMem);
+        double availableCpu = Math.max(0, totalCpu - usedCpu);
+        double availableGpu = Math.max(0, totalGpu - usedGpu);
+
+        return ResourceCapacity.newBuilder()
+                .setTotal(ResourceSpec.newBuilder()
+                        .setCpu(totalCpu)
+                        .setMemory(Long.toString(totalMem))
+                        .setGpu(totalGpu)
+                        .build())
+                .setUsed(ResourceSpec.newBuilder()
+                        .setCpu(usedCpu)
+                        .setMemory(Long.toString(usedMem))
+                        .setGpu(usedGpu)
+                        .build())
+                .setAvailable(ResourceSpec.newBuilder()
+                        .setCpu(availableCpu)
+                        .setMemory(Long.toString(availableMem))
+                        .setGpu(availableGpu)
+                        .build())
+                .build();
+    }
+
+    private static List<String> collectDistinctTags(ProviderRegistry registry) {
+        Set<String> set = new LinkedHashSet<>();
+        for (ProviderInfo p : registry.listProviders()) {
+            if (p.getStatus() != ProviderInfo.Status.ONLINE && p.getStatus() != ProviderInfo.Status.DEGRADED) {
+                continue;
+            }
+            for (String t : p.getTags()) {
+                if (t != null && !t.isBlank()) {
+                    set.add(t);
+                }
+            }
+        }
+        return List.copyOf(set);
+    }
+
     public synchronized void updateLocalNode(String nodeName,
                                              String address,
                                              ResourceCapacity capacity,
                                              List<String> tags,
                                              long version) {
         ResourceCapacity cap = capacity != null ? capacity : emptyCapacity();
+        String addr = address != null ? address : "";
         PeerNode node = new PeerNode(
                 localNodeId,
                 nodeName != null ? nodeName : localNodeId,
-                address,
+                addr,
                 domainId,
                 tags,
                 cap,
@@ -68,7 +150,6 @@ public class NodeDiscoveryManager {
                 Instant.now().toEpochMilli()
         );
         this.localNode = node;
-        // 本地节点也加入 knownNodes，便于统一聚合
         knownNodes.put(localNodeId, node);
     }
 
@@ -76,13 +157,8 @@ public class NodeDiscoveryManager {
         return Optional.ofNullable(localNode);
     }
 
-    // ======================== Gossip 处理 ========================
-
     /**
-     * 处理从某个 peer 接收到的一批 {@link PeerNodeInfo}。
-     *
-     * @param nodes          对端提供的节点列表
-     * @param senderAddress  gRPC 对端地址（用于缺失 address 时填充）
+     * 合并对端 Gossip 条目（论文算法 2：版本优先；同版本仅刷新观测时间与传播计数）。
      */
     public void processGossipNodes(List<PeerNodeInfo> nodes, String senderAddress) {
         if (nodes == null || nodes.isEmpty()) {
@@ -93,21 +169,20 @@ public class NodeDiscoveryManager {
             if (info == null || info.getNodeId().isEmpty()) {
                 continue;
             }
-            // 只关注当前 domain
-            if (!info.getDomainId().isEmpty() && !info.getDomainId().equals(domainId)) {
-                continue;
-            }
             String nodeId = info.getNodeId();
-            // 忽略本地节点（由 updateLocalNode 维护）
             if (nodeId.equals(localNodeId)) {
                 continue;
             }
 
+            String address = (info.getAddress() == null || info.getAddress().isEmpty())
+                    ? (senderAddress != null ? senderAddress : "")
+                    : info.getAddress();
+            ResourceCapacity cap = info.hasCapacity() ? info.getCapacity() : emptyCapacity();
+            long version = info.getVersion();
+            int gossipCount = info.getGossipCount();
+            long incomingLastSeen = info.getLastSeenMs() > 0 ? info.getLastSeenMs() : now;
+
             knownNodes.compute(nodeId, (id, existing) -> {
-                String address = info.getAddress().isEmpty() ? senderAddress : info.getAddress();
-                ResourceCapacity cap = info.hasCapacity() ? info.getCapacity() : emptyCapacity();
-                long version = info.getVersion();
-                int gossipCount = info.getGossipCount();
                 if (existing == null) {
                     return new PeerNode(
                             nodeId,
@@ -118,19 +193,29 @@ public class NodeDiscoveryManager {
                             cap,
                             version,
                             gossipCount,
-                            now
+                            incomingLastSeen
                     );
-                } else {
-                    // 简单基于 version 进行“最后写入优先”的合并
-                    if (version >= existing.getVersion()) {
-                        existing.updateCapacity(cap, version);
-                    }
-                    existing.touchFromGossip(gossipCount);
+                }
+                if (version > existing.getVersion()) {
+                    existing.updateFromGossip(
+                            info.getNodeName(),
+                            address,
+                            info.getDomainId(),
+                            info.getTagsList(),
+                            cap,
+                            version,
+                            gossipCount,
+                            incomingLastSeen
+                    );
                     return existing;
                 }
+                if (version == existing.getVersion()) {
+                    existing.refreshIfNewerObservation(incomingLastSeen, gossipCount);
+                    return existing;
+                }
+                return existing;
             });
         }
-        // 清理过期节点
         cleanupExpired(now);
     }
 
@@ -144,18 +229,110 @@ public class NodeDiscoveryManager {
         });
     }
 
-    // ======================== 视图查询 ========================
+    /**
+     * 当前视图的只读快照（响应 Gossip 时返回本地视图，不递增传播计数）。
+     */
+    public List<PeerNodeInfo> buildNodeInfoList() {
+        List<PeerNodeInfo> out = new ArrayList<>(knownNodes.size());
+        for (PeerNode n : knownNodes.values()) {
+            out.add(toPeerNodeInfo(n));
+        }
+        return out;
+    }
 
     /**
-     * 返回当前已知的所有节点（包括本地节点）。
+     * 出站 Gossip：递增各条目的传播计数后序列化（论文 3.3.2）。
      */
+    public List<PeerNodeInfo> buildGossipSendPayload() {
+        List<PeerNode> snapshot = new ArrayList<>(knownNodes.values());
+        List<PeerNodeInfo> out = new ArrayList<>(snapshot.size());
+        for (PeerNode n : snapshot) {
+            int gc = n.incrementGossipCountForSend();
+            out.add(toPeerNodeInfoWithGossipCount(n, gc));
+        }
+        return out;
+    }
+
+    private static PeerNodeInfo toPeerNodeInfo(PeerNode n) {
+        return toPeerNodeInfoWithGossipCount(n, n.getGossipCount());
+    }
+
+    private static PeerNodeInfo toPeerNodeInfoWithGossipCount(PeerNode n, int gossipCount) {
+        ResourceCapacity cap = n.getCapacity() != null ? n.getCapacity() : emptyCapacity();
+        return PeerNodeInfo.newBuilder()
+                .setNodeId(n.getNodeId())
+                .setNodeName(n.getNodeName() != null ? n.getNodeName() : n.getNodeId())
+                .setAddress(n.getAddress() != null ? n.getAddress() : "")
+                .setDomainId(n.getDomainId() != null ? n.getDomainId() : "")
+                .setCapacity(cap)
+                .addAllTags(n.getTags() != null ? n.getTags() : List.of())
+                .setVersion(n.getVersion())
+                .setGossipCount(gossipCount)
+                .setLastSeenMs(n.getLastSeenMs())
+                .build();
+    }
+
+    /**
+     * 按资源需求与标签筛选候选管理节点（远程域），按可用 CPU 降序（论文 3.3.3 候选节点筛选）。
+     *
+     * @param required     可为 null，表示不做资源下界过滤；某维度 &le; 0 视为无约束
+     * @param requiredTags 可为 null 或空，表示必须同时具备的标签集合
+     */
+    public List<PeerNode> filterCandidateNodes(ResourceSpec required, List<String> requiredTags) {
+        List<String> tags = requiredTags == null ? List.of() : requiredTags.stream()
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .toList();
+
+        return knownNodes.values().stream()
+                .filter(node -> !node.getNodeId().equals(localNodeId))
+                .filter(node -> matchesResourceConstraints(node, required))
+                .filter(node -> matchesAllTags(node, tags))
+                .sorted(Comparator.comparingDouble((PeerNode n) ->
+                        safeCapacity(n).getAvailable().getCpu()).reversed())
+                .collect(Collectors.toList());
+    }
+
+    private static boolean matchesAllTags(PeerNode node, List<String> requiredTags) {
+        if (requiredTags.isEmpty()) {
+            return true;
+        }
+        Set<String> nodeTags = new LinkedHashSet<>(node.getTags() != null ? node.getTags() : List.of());
+        for (String t : requiredTags) {
+            if (!nodeTags.contains(t)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean matchesResourceConstraints(PeerNode node, ResourceSpec required) {
+        if (required == null) {
+            return true;
+        }
+        ResourceCapacity cap = safeCapacity(node);
+        ResourceSpec avail = cap.getAvailable();
+        if (required.getCpu() > 0 && avail.getCpu() < required.getCpu()) {
+            return false;
+        }
+        if (required.getGpu() > 0 && avail.getGpu() < required.getGpu()) {
+            return false;
+        }
+        if (required.getMemory() != null && !required.getMemory().isBlank()) {
+            long needMem = parseMemoryBytes(required.getMemory());
+            long haveMem = parseMemoryBytes(avail.getMemory());
+            if (needMem > 0 && haveMem < needMem) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     public List<PeerNode> getKnownNodes() {
         return new ArrayList<>(knownNodes.values());
     }
 
-    /**
-     * 计算所有节点的聚合资源容量。
-     */
     public ResourceCapacity getAggregatedCapacity() {
         double totalCpu = 0;
         double totalGpu = 0;
@@ -170,17 +347,17 @@ public class NodeDiscoveryManager {
             if (cap == null) {
                 continue;
             }
-            Resource total = cap.getTotal();
-            Resource used = cap.getUsed();
-            if (total != null) {
-                totalCpu += total.getCpu();
-                totalGpu += total.getGpu();
-                totalMem += parseMemoryBytes(total.getMemory());
+            ResourceSpec t = cap.getTotal();
+            ResourceSpec u = cap.getUsed();
+            if (t != null) {
+                totalCpu += t.getCpu();
+                totalGpu += t.getGpu();
+                totalMem += parseMemoryBytes(t.getMemory());
             }
-            if (used != null) {
-                usedCpu += used.getCpu();
-                usedGpu += used.getGpu();
-                usedMem += parseMemoryBytes(used.getMemory());
+            if (u != null) {
+                usedCpu += u.getCpu();
+                usedGpu += u.getGpu();
+                usedMem += parseMemoryBytes(u.getMemory());
             }
         }
 
@@ -189,17 +366,17 @@ public class NodeDiscoveryManager {
         double availableGpu = Math.max(0, totalGpu - usedGpu);
 
         return ResourceCapacity.newBuilder()
-                .setTotal(Resource.newBuilder()
+                .setTotal(ResourceSpec.newBuilder()
                         .setCpu(totalCpu)
                         .setMemory(Long.toString(totalMem))
                         .setGpu(totalGpu)
                         .build())
-                .setUsed(Resource.newBuilder()
+                .setUsed(ResourceSpec.newBuilder()
                         .setCpu(usedCpu)
                         .setMemory(Long.toString(usedMem))
                         .setGpu(usedGpu)
                         .build())
-                .setAvailable(Resource.newBuilder()
+                .setAvailable(ResourceSpec.newBuilder()
                         .setCpu(availableCpu)
                         .setMemory(Long.toString(availableMem))
                         .setGpu(availableGpu)
@@ -207,13 +384,6 @@ public class NodeDiscoveryManager {
                 .build();
     }
 
-    /**
-     * 根据简单策略选择一个“最适合”的远程节点：
-     * <ul>
-     *   <li>排除本地节点</li>
-     *   <li>按 Available CPU 从大到小排序，取第一个</li>
-     * </ul>
-     */
     public Optional<PeerNode> chooseRemoteNodeByAvailableCpu() {
         return knownNodes.values().stream()
                 .filter(node -> !node.getNodeId().equals(localNodeId))
@@ -229,7 +399,7 @@ public class NodeDiscoveryManager {
     }
 
     private static ResourceCapacity emptyCapacity() {
-        Resource zero = Resource.newBuilder()
+        ResourceSpec zero = ResourceSpec.newBuilder()
                 .setCpu(0)
                 .setMemory("0")
                 .setGpu(0)
@@ -248,5 +418,17 @@ public class NodeDiscoveryManager {
         } catch (NumberFormatException e) {
             return 0;
         }
+    }
+
+    public String getLocalNodeId() {
+        return localNodeId;
+    }
+
+    public String getDomainId() {
+        return domainId;
+    }
+
+    public String getAdvertiseAddress() {
+        return advertiseAddress;
     }
 }

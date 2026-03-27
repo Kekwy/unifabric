@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package iarnet.common;
+package unifabric.common;
 
 option java_package = "com.kekwy.unifabric.proto.common";
 option java_multiple_files = true;
@@ -11,4 +11,11 @@ message ResourceSpec {
   double cpu    = 1;
   string memory = 2;
   double gpu    = 3;
+}
+
+// 资源容量：总量 / 已用量 / 可用量（域视图、Provider 上报等复用）
+message ResourceCapacity {
+  ResourceSpec total     = 1;
+  ResourceSpec used      = 2;
+  ResourceSpec available = 3;
 }

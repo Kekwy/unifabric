@@ -1,6 +1,6 @@
 package com.kekwy.unifabric.fabric.discovery;
 
-import com.kekwy.unifabric.proto.resource.ResourceCapacity;
+import com.kekwy.unifabric.proto.common.ResourceCapacity;
 
 import java.time.Instant;
 import java.util.List;
@@ -9,16 +9,15 @@ import java.util.Objects;
 /**
  * 控制节点资源视图中的单个节点信息。
  * <p>
- * 这是对 proto {@code PeerNodeInfo} 的 Java 领域封装，
- * 便于在资源层内部处理和聚合。
+ * 远程条目在版本更高时可通过 {@link #updateFromGossip} 完整覆盖（论文 3.3.2 版本化合并）。
  */
 public class PeerNode {
 
     private final String nodeId;
-    private final String nodeName;
-    private final String address;
-    private final String domainId;
-    private final List<String> tags;
+    private volatile String nodeName;
+    private volatile String address;
+    private volatile String domainId;
+    private volatile List<String> tags;
 
     private volatile ResourceCapacity capacity;
     private volatile long version;
@@ -36,7 +35,7 @@ public class PeerNode {
                     long lastSeenMs) {
         this.nodeId = Objects.requireNonNull(nodeId, "nodeId must not be null");
         this.nodeName = nodeName != null ? nodeName : nodeId;
-        this.address = Objects.requireNonNull(address, "address must not be null");
+        this.address = address != null ? address : "";
         this.domainId = domainId != null ? domainId : "";
         this.tags = tags != null ? List.copyOf(tags) : List.of();
         this.capacity = capacity != null ? capacity : ResourceCapacity.getDefaultInstance();
@@ -81,7 +80,10 @@ public class PeerNode {
         return lastSeenMs;
     }
 
-    public void updateCapacity(ResourceCapacity capacity, long version) {
+    /**
+     * 本域心跳聚合路径：更新容量与版本（仅当 version 更高时提升版本号）。
+     */
+    public synchronized void updateCapacity(ResourceCapacity capacity, long version) {
         if (capacity != null) {
             this.capacity = capacity;
         }
@@ -91,9 +93,48 @@ public class PeerNode {
         this.lastSeenMs = Instant.now().toEpochMilli();
     }
 
-    public void touchFromGossip(int gossipCount) {
+    /**
+     * Gossip 合并：新版本严格大于本地时完整覆盖条目（论文算法 2）。
+     */
+    public synchronized void updateFromGossip(String nodeName,
+                                                String address,
+                                                String domainId,
+                                                List<String> tags,
+                                                ResourceCapacity capacity,
+                                                long version,
+                                                int gossipCount,
+                                                long lastSeenMs) {
+        if (version <= this.version) {
+            return;
+        }
+        this.nodeName = nodeName != null && !nodeName.isEmpty() ? nodeName : this.nodeName;
+        this.address = address != null ? address : "";
+        this.domainId = domainId != null ? domainId : "";
+        this.tags = tags != null ? List.copyOf(tags) : List.of();
+        if (capacity != null) {
+            this.capacity = capacity;
+        }
+        this.version = version;
         this.gossipCount = gossipCount;
-        this.lastSeenMs = Instant.now().toEpochMilli();
+        this.lastSeenMs = lastSeenMs > 0 ? lastSeenMs : Instant.now().toEpochMilli();
+    }
+
+    /**
+     * 版本相同且对端观测时间更新时，仅刷新 lastSeen 与 gossipCount（论文算法 2）。
+     */
+    public synchronized void refreshIfNewerObservation(long incomingLastSeenMs, int incomingGossipCount) {
+        if (incomingLastSeenMs > this.lastSeenMs) {
+            this.lastSeenMs = incomingLastSeenMs;
+            this.gossipCount = incomingGossipCount;
+        }
+    }
+
+    /**
+     * 出站 Gossip：递增传播计数（论文 3.3.2）。
+     */
+    public synchronized int incrementGossipCountForSend() {
+        this.gossipCount = this.gossipCount + 1;
+        return this.gossipCount;
     }
 
     @Override

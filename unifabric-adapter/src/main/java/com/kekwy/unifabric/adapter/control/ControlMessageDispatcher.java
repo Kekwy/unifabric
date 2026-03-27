@@ -6,7 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * ControlChannel 消息分发：仅负责按 messageCase 委托 ControlService。
+ * ControlChannel 消息分发。
  */
 public class ControlMessageDispatcher implements StreamObserver<ControlEnvelope> {
 
@@ -27,9 +27,8 @@ public class ControlMessageDispatcher implements StreamObserver<ControlEnvelope>
             case PROVIDER_HEARTBEAT_ACK:
                 service.handleHeartbeatAck(value.getProviderHeartbeatAck(), value.getMessageId());
                 break;
-            case REGISTER_PROVIDER_REQUEST:
-            case REGISTER_PROVIDER_RESPONSE:
-                log.debug("ControlChannel 收到注册相关消息: {}", value.getMessageCase());
+            case RESOURCE_CAPACITY_REPORT_ACK:
+                service.handleResourceCapacityReportAck(value.getResourceCapacityReportAck());
                 break;
             default:
                 log.debug("ControlChannel 收到: {}", value.getMessageCase());

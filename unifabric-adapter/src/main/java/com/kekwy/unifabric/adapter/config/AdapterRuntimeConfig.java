@@ -1,36 +1,31 @@
 package com.kekwy.unifabric.adapter.config;
 
-import com.kekwy.unifabric.adapter.actor.ActorRegistrationServiceGrpcImpl;
 import com.kekwy.unifabric.adapter.artifact.ArtifactFetcher;
 import com.kekwy.unifabric.adapter.artifact.ArtifactStore;
 import com.kekwy.unifabric.adapter.control.ControlService;
 import com.kekwy.unifabric.adapter.deployment.DeploymentService;
-import com.kekwy.unifabric.adapter.engine.ResourceProvider;
-import com.kekwy.unifabric.adapter.engine.docker.DockerEngine;
-import com.kekwy.unifabric.adapter.engine.k8s.KubernetesEngine;
+import com.kekwy.unifabric.adapter.provider.ResourceProvider;
+import com.kekwy.unifabric.adapter.provider.docker.DockerResourceProvider;
+import com.kekwy.unifabric.adapter.provider.k8s.KubernetesResourceProvider;
+import com.kekwy.unifabric.adapter.network.ProxyPortAllocator;
+import com.kekwy.unifabric.adapter.network.TcpProxyServer;
 import com.kekwy.unifabric.adapter.registry.AdapterRegistryClient;
 import com.kekwy.unifabric.adapter.signaling.SignalingService;
 import com.kekwy.unifabric.proto.fabric.ProviderRegistryServiceGrpc;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
-import io.grpc.Server;
-import io.grpc.ServerBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.DependsOn;
 
 import java.nio.file.Path;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 
 /**
- * 资源适配器运行时 Bean 配置：ArtifactStore、ResourceProvider、ArtifactFetcher、
- * Actor 注册 gRPC Server、AdapterRegistryClient。
- * <p>
- * 创建与销毁顺序由依赖与 @DependsOn 保证：先启动 actorRegistrationServer，
- * 再创建并 start AdapterRegistryClient。
+ * 资源适配器运行时 Bean 配置。
  */
 @Configuration
 public class AdapterRuntimeConfig {
@@ -44,28 +39,12 @@ public class AdapterRuntimeConfig {
 
     @Bean(destroyMethod = "close")
     public ResourceProvider resourceProvider(AdapterProperties props, ArtifactStore artifactStore) {
-        return createEngine(props, artifactStore);
+        return createResourceProvider(props, artifactStore);
     }
 
     @Bean
     public ArtifactFetcher artifactFetcher(ArtifactStore artifactStore) {
         return new ArtifactFetcher(artifactStore);
-    }
-
-    @Bean(name = "actorRegistrationServer", destroyMethod = "shutdown")
-    public Server actorRegistrationServer(AdapterProperties props,
-                                          ActorRegistrationServiceGrpcImpl actorRegistrationService) {
-        int port = props.getActorRegistry().getPort();
-        Server server = ServerBuilder.forPort(port)
-                .addService(actorRegistrationService)
-                .build();
-        try {
-            server.start();
-            log.info("ActorRegistrationService 已启动: port={}", port);
-        } catch (Exception e) {
-            throw new IllegalStateException("启动 ActorRegistrationService 失败: port=" + port, e);
-        }
-        return server;
     }
 
     @Bean(destroyMethod = "shutdown")
@@ -91,11 +70,30 @@ public class AdapterRuntimeConfig {
         return Executors.newScheduledThreadPool(2);
     }
 
+    @Bean(name = "signalingIoExecutor", destroyMethod = "shutdown")
+    public ExecutorService signalingIoExecutor() {
+        return Executors.newCachedThreadPool(r -> {
+            Thread t = new Thread(r, "adapter-signaling-io");
+            t.setDaemon(true);
+            return t;
+        });
+    }
+
     @Bean(destroyMethod = "close")
-    @DependsOn("actorRegistrationServer")
+    public TcpProxyServer tcpProxyServer(AdapterProperties props) {
+        AdapterProperties.Connectivity c = props.getConnectivity();
+        ProxyPortAllocator alloc = null;
+        if (c != null && c.getProxyPortMin() > 0 && c.getProxyPortMax() >= c.getProxyPortMin()) {
+            alloc = new ProxyPortAllocator(c.getProxyPortMin(), c.getProxyPortMax());
+        }
+        return new TcpProxyServer(alloc);
+    }
+
+    @Bean(destroyMethod = "close")
     public AdapterRegistryClient adapterRegistryClient(AdapterProperties props,
                                                        AdapterIdentity adapterIdentity,
                                                        ProviderRegistryServiceGrpc.ProviderRegistryServiceBlockingStub providerRegistryBlockingStub,
+                                                       ScheduledExecutorService adapterScheduler,
                                                        ControlService controlService,
                                                        DeploymentService deploymentService,
                                                        SignalingService signalingService) {
@@ -104,6 +102,7 @@ public class AdapterRuntimeConfig {
                 providerRegistryBlockingStub,
                 props,
                 adapterIdentity,
+                adapterScheduler,
                 controlService,
                 deploymentService,
                 signalingService);
@@ -113,24 +112,19 @@ public class AdapterRuntimeConfig {
         return client;
     }
 
-    private static ResourceProvider createEngine(AdapterProperties props, ArtifactStore artifactStore) {
-        String host = props.getHost() != null && !props.getHost().isBlank()
-                ? props.getHost() : "host.docker.internal";
-        String actorRegistryAddr = host + ":" + props.getActorRegistry().getPort();
-
+    private static ResourceProvider createResourceProvider(AdapterProperties props, ArtifactStore artifactStore) {
         return switch (props.getType().toLowerCase()) {
-            case "docker" -> new DockerEngine(
+            case "docker" -> new DockerResourceProvider(
                     props.getDocker().getHost(),
                     props.getDocker().getNetwork(),
-                    artifactStore,
-                    actorRegistryAddr);
-            case "k8s", "kubernetes" -> new KubernetesEngine(
+                    artifactStore);
+            case "k8s", "kubernetes" -> new KubernetesResourceProvider(
                     props.getK8s().getKubeconfig(),
                     props.getK8s().isInCluster(),
                     props.getK8s().getNamespace(),
                     artifactStore);
             default -> throw new IllegalArgumentException(
-                    "不支持的引擎类型: " + props.getType() + "，可选: docker, k8s");
+                    "不支持的资源提供者类型: " + props.getType() + "，可选: docker, k8s");
         };
     }
 }

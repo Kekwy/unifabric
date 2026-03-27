@@ -1,60 +1,67 @@
 package com.kekwy.unifabric.adapter.signaling;
 
-import com.kekwy.unifabric.adapter.actor.ActorRouter;
 import com.kekwy.unifabric.adapter.config.AdapterIdentity;
-import com.kekwy.unifabric.adapter.registry.DelegatingObserver;
+import com.kekwy.unifabric.adapter.config.AdapterProperties;
+import com.kekwy.unifabric.adapter.network.TcpProxyServer;
 import com.kekwy.unifabric.adapter.registry.AdapterRegistryClient;
-import com.kekwy.unifabric.proto.provider.InstanceMessageForward;
+import com.kekwy.unifabric.adapter.registry.DelegatingObserver;
+import com.kekwy.unifabric.adapter.util.ExponentialBackoff;
 import com.kekwy.unifabric.proto.fabric.ProviderRegistryServiceGrpc;
-import com.kekwy.unifabric.proto.provider.InstanceChannelStatus;
-import com.kekwy.unifabric.proto.provider.InstanceReadyReport;
-import com.kekwy.unifabric.proto.provider.ConnectInstruction;
-import com.kekwy.unifabric.proto.provider.IceEnvelope;
-import com.kekwy.unifabric.proto.provider.SignalingEnvelope;
+import com.kekwy.unifabric.proto.provider.*;
 import io.grpc.Metadata;
 import io.grpc.stub.MetadataUtils;
 import io.grpc.stub.StreamObserver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
+import java.net.Socket;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 管理 SignalingChannel 生命周期；asyncStub、scheduler、actorRouter 由 Spring 构造注入，
- * providerId 从 {@link AdapterIdentity} 读取。
+ * 管理 SignalingChannel：跨 Provider 信令、实例端点上报与连通性协商（论文 3.5）。
  */
 @Service
 public class SignalingService {
 
     private static final Logger log = LoggerFactory.getLogger(SignalingService.class);
-    private static final long RECONNECT_DELAY_SECONDS = 5;
 
     private final ProviderRegistryServiceGrpc.ProviderRegistryServiceStub asyncStub;
     private final ScheduledExecutorService scheduler;
-    private final ActorRouter actorRouter;
     private final AdapterIdentity identity;
+    private final AdapterProperties adapterProperties;
+    private final TcpProxyServer tcpProxyServer;
+    private final ExecutorService signalingIoExecutor;
 
     private volatile boolean closed = false;
     private volatile StreamObserver<SignalingEnvelope> signalingSender;
-    /** 保护 signalingSender.onNext 的锁，gRPC StreamObserver 非线程安全 */
     private final Object senderLock = new Object();
-    /** Channel 未就绪时暂存的上报，建立/重连后统一发送 */
     private final ConcurrentLinkedQueue<SignalingEnvelope> pendingReports = new ConcurrentLinkedQueue<>();
+    private final ExponentialBackoff reconnectBackoff = new ExponentialBackoff();
+
+    /** 发起方等待对端 {@link CandidateUpdate}（论文 3.5.4） */
+    private final ConcurrentHashMap<String, ConnectInstruction> pendingInitiatorByConnectId =
+            new ConcurrentHashMap<>();
 
     public SignalingService(ProviderRegistryServiceGrpc.ProviderRegistryServiceStub providerRegistryAsyncStub,
                             ScheduledExecutorService adapterScheduler,
-                            ActorRouter actorRouter,
-                            AdapterIdentity identity) {
+                            AdapterIdentity identity,
+                            AdapterProperties adapterProperties,
+                            TcpProxyServer tcpProxyServer,
+                            @Qualifier("signalingIoExecutor") ExecutorService signalingIoExecutor) {
         this.asyncStub = providerRegistryAsyncStub;
         this.scheduler = adapterScheduler;
-        this.actorRouter = actorRouter;
         this.identity = identity;
+        this.adapterProperties = adapterProperties;
+        this.tcpProxyServer = tcpProxyServer;
+        this.signalingIoExecutor = signalingIoExecutor;
     }
 
-    /** 建立 Signaling 流（providerId 从 AdapterIdentity 读取，重连时同样）。重连前先关闭旧流，避免多流并存导致对端或框架主动关闭。 */
     public void openChannel() {
         String providerId = identity != null ? identity.getProviderId() : null;
         if (closed || asyncStub == null || providerId == null) return;
@@ -71,7 +78,7 @@ public class SignalingService {
 
         DelegatingObserver<SignalingEnvelope> proxy = new DelegatingObserver<>();
         final StreamObserver<SignalingEnvelope> thisSender = proxy;
-        StreamObserver<SignalingEnvelope> receiver = new SignalingMessageDispatcher(this, proxy,
+        StreamObserver<SignalingEnvelope> receiver = new SignalingMessageDispatcher(this,
                 () -> onDisconnect(thisSender));
 
         Metadata headers = new Metadata();
@@ -81,6 +88,7 @@ public class SignalingService {
         StreamObserver<SignalingEnvelope> sender = headerStub.signalingChannel(receiver);
         proxy.setDelegate(sender);
         this.signalingSender = proxy;
+        reconnectBackoff.reset();
 
         log.info("SignalingChannel 已建立: providerId={}", providerId);
         flushPendingReports();
@@ -93,14 +101,14 @@ public class SignalingService {
         }
         this.signalingSender = null;
         if (closed) return;
-        log.warn("SignalingChannel 断开，{}s 后重连...", RECONNECT_DELAY_SECONDS);
+        long delayMs = reconnectBackoff.nextDelayMs();
+        log.warn("SignalingChannel 断开，{}ms 后重连（指数退避）...", delayMs);
         scheduler.schedule(() -> {
             try { disconnectedSender.onCompleted(); } catch (Exception e) { log.trace("关闭旧流: {}", e.getMessage()); }
             openChannel();
-        }, RECONNECT_DELAY_SECONDS, TimeUnit.SECONDS);
+        }, delayMs, TimeUnit.MILLISECONDS);
     }
 
-    /** 将暂存的上报按序发出（channel 建立/重连后调用）。与 sendOrEnqueue 共用 senderLock 保证线程安全。 */
     private void flushPendingReports() {
         StreamObserver<SignalingEnvelope> sender = this.signalingSender;
         if (sender == null) return;
@@ -112,7 +120,7 @@ public class SignalingService {
                     sender.onNext(envelope);
                     count++;
                 } catch (Exception e) {
-                    log.warn("重放暂存上报失败，已丢弃剩余 {} 条", pendingReports.size() + 1, e);
+                    log.warn("重放暂存信令失败，已丢弃剩余 {} 条", pendingReports.size() + 1, e);
                     break;
                 }
             }
@@ -126,63 +134,198 @@ public class SignalingService {
         closed = true;
     }
 
-    // --- 业务方法，供 SignalingMessageDispatcher 委托调用 ---
-
-    /** 跨 Provider 转发：从 InstanceMessageForward 取 target 与 envelope，投递到本地实例。 */
-    public void forwardEnvelopeToInstance(InstanceMessageForward forward) {
-        if (forward == null) return;
-        String targetActorId = forward.getTarget();
-        if (targetActorId == null || targetActorId.isBlank()) {
-            log.warn("InstanceMessageForward 缺少 target，无法转发");
+    public void handleConnectInstruction(ConnectInstruction instruction) {
+        if (instruction == null) {
             return;
         }
-        actorRouter.deliverToTarget(targetActorId, forward.getActorEnvelope());
+        String cid = instruction.getConnectId();
+        if (cid == null || cid.isBlank()) {
+            return;
+        }
+        signalingIoExecutor.execute(() -> processConnectInstruction(instruction));
     }
 
-    public void handleConnectInstruction(ConnectInstruction instruction) {
-        log.debug("收到 ConnectInstruction: connectId={}", instruction != null ? instruction.getConnectId() : null);
+    private void processConnectInstruction(ConnectInstruction ins) {
+        try {
+            String relayHost = ins.getRelayHost();
+            int relayPort = ins.getRelayPort();
+            boolean useRelay = relayHost != null && !relayHost.isBlank() && relayPort > 0;
+            if (useRelay) {
+                Socket relaySocket = new Socket(relayHost, relayPort);
+                int localPort = tcpProxyServer.attachLocalAcceptToUpstream(relaySocket);
+                emitCandidateUpdate(ins.getConnectId(), localPort, relayHost, relayPort);
+                log.info("已建立经中继的本地代理: connectId={}, listenPort={}", ins.getConnectId(), localPort);
+                return;
+            }
+            if (!ins.getInitiator()) {
+                String dst = ins.getDstInstanceAddr();
+                HostPort hp = parseHostPort(dst);
+                if (hp == null) {
+                    log.warn("ConnectInstruction 缺少有效 dst_instance_addr: connectId={}", ins.getConnectId());
+                    return;
+                }
+                int localPort = tcpProxyServer.openInboundProxy(hp.host(), hp.port());
+                emitCandidateUpdate(ins.getConnectId(), localPort, null, 0);
+                log.info("应答方本地代理已监听: connectId={}, -> {}:{}, listenPort={}",
+                        ins.getConnectId(), hp.host(), hp.port(), localPort);
+                return;
+            }
+            pendingInitiatorByConnectId.put(ins.getConnectId(), ins);
+            log.debug("发起方已登记，等待对端候选地址: connectId={}", ins.getConnectId());
+        } catch (Exception e) {
+            log.warn("处理 ConnectInstruction 失败: connectId={}, {}", ins.getConnectId(), e.getMessage());
+        }
+    }
+
+    public void handleCandidateUpdate(CandidateUpdate update) {
+        if (update == null) {
+            return;
+        }
+        String cid = update.getConnectId();
+        if (cid == null || cid.isBlank()) {
+            return;
+        }
+        ConnectInstruction pending = pendingInitiatorByConnectId.get(cid);
+        if (pending == null || !pending.getInitiator()) {
+            return;
+        }
+        for (NetworkCandidate c : update.getCandidatesList()) {
+            if (c.getType() != NetworkCandidate.CandidateType.DIRECT) {
+                continue;
+            }
+            if (c.getPort() <= 0 || c.getHost() == null || c.getHost().isBlank()) {
+                continue;
+            }
+            signalingIoExecutor.execute(() -> {
+                try {
+                    int localPort = tcpProxyServer.openInboundProxy(c.getHost(), c.getPort());
+                    emitCandidateUpdate(cid, localPort, null, 0);
+                    pendingInitiatorByConnectId.remove(cid);
+                    log.info("发起方已根据对端候选建立代理: connectId={}, -> {}:{}, listenPort={}",
+                            cid, c.getHost(), c.getPort(), localPort);
+                } catch (Exception e) {
+                    log.warn("发起方代理建立失败: connectId={}, {}", cid, e.getMessage());
+                }
+            });
+            break;
+        }
     }
 
     public void handleIceEnvelope(IceEnvelope iceEnvelope) {
         log.debug("收到 IceEnvelope: connectId={}", iceEnvelope != null ? iceEnvelope.getConnectId() : null);
     }
 
-    /** 上报 Actor 就绪（供 ActorRegistrationServiceGrpcImpl 等调用）。Channel 未就绪时入队，建立后重放。 */
-    public void reportActorReady(String actorId) {
-        String providerId = identity != null ? identity.getProviderId() : "";
-        SignalingEnvelope msg = SignalingEnvelope.newBuilder()
-                .setProviderId(providerId != null ? providerId : "")
-                .setTimestampMs(System.currentTimeMillis())
-                .setInstanceReady(InstanceReadyReport.newBuilder().setInstanceId(actorId).build())
-                .build();
-        if (!sendOrEnqueue(msg, "InstanceReadyReport", actorId)) {
-            log.debug("SignalingChannel 未就绪，InstanceReadyReport 已入队: actorId={}", actorId);
+    public void handleResolveEndpointResponse(ResolveEndpointResponse response) {
+        if (response == null) {
+            return;
+        }
+        if (response.getErrorMessage() != null && !response.getErrorMessage().isBlank()) {
+            log.warn("端点解析失败: correlationId={}, {}", response.getCorrelationId(), response.getErrorMessage());
+            return;
+        }
+        String tier = response.getConnectivityTier();
+        String cid = response.getConnectId();
+        if (response.hasProxyEndpoint()) {
+            InstanceEndpoint p = response.getProxyEndpoint();
+            log.info("端点解析结果: tier={}, connectId={}, proxy={}:{}",
+                    tier, cid, p.getHost(), p.getPort());
+        } else {
+            log.info("端点解析结果: tier={}, connectId={}, 无 proxy 字段", tier, cid);
         }
     }
 
-    /** 上报本地通道已建立（供 ActorRegistrationServiceGrpcImpl、DeploymentService 等调用）。Channel 未就绪时入队。 */
-    public void reportChannelEstablished(String srcActorId, String dstActorId) {
-        String providerId = identity != null ? identity.getProviderId() : "";
+    private void emitCandidateUpdate(String connectId, int directListenPort, String relayHost, int relayPort) {
+        String host = advertiseHost();
+        CandidateUpdate.Builder cb = CandidateUpdate.newBuilder().setConnectId(connectId);
+        cb.addCandidates(NetworkCandidate.newBuilder()
+                .setType(NetworkCandidate.CandidateType.DIRECT)
+                .setHost(host)
+                .setPort(directListenPort)
+                .setPriority(100)
+                .build());
+        if (relayHost != null && !relayHost.isBlank() && relayPort > 0) {
+            cb.addCandidates(NetworkCandidate.newBuilder()
+                    .setType(NetworkCandidate.CandidateType.RELAY)
+                    .setHost(relayHost)
+                    .setPort(relayPort)
+                    .setPriority(50)
+                    .build());
+        }
         SignalingEnvelope msg = SignalingEnvelope.newBuilder()
-                .setProviderId(providerId != null ? providerId : "")
                 .setTimestampMs(System.currentTimeMillis())
-                .setInstanceChannel(InstanceChannelStatus.newBuilder()
-                        .setWorkflowId("")
-                        .setApplicationId("")
-                        .setSrcInstanceAddr(srcActorId)
-                        .setDstInstanceAddr(dstActorId)
-                        .setConnected(true)
+                .setCandidateUpdate(cb.build())
+                .build();
+        sendOrEnqueue(msg, "CandidateUpdate", connectId);
+    }
+
+    private String advertiseHost() {
+        if (adapterProperties != null && adapterProperties.getHost() != null
+                && !adapterProperties.getHost().isBlank()) {
+            return adapterProperties.getHost();
+        }
+        return "127.0.0.1";
+    }
+
+    private record HostPort(String host, int port) {}
+
+    private static HostPort parseHostPort(String s) {
+        if (s == null || s.isBlank()) {
+            return null;
+        }
+        int colon = s.lastIndexOf(':');
+        if (colon <= 0 || colon >= s.length() - 1) {
+            return null;
+        }
+        String h = s.substring(0, colon).trim();
+        String p = s.substring(colon + 1).trim();
+        try {
+            int port = Integer.parseInt(p);
+            if (port <= 0 || port > 65535 || h.isEmpty()) {
+                return null;
+            }
+            return new HostPort(h, port);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    public void reportInstanceEndpoint(String instanceId, InstanceEndpoint endpoint) {
+        if (instanceId == null || instanceId.isBlank() || endpoint == null) {
+            return;
+        }
+        SignalingEnvelope msg = SignalingEnvelope.newBuilder()
+                .setTimestampMs(System.currentTimeMillis())
+                .setInstanceEndpointReport(InstanceEndpointReport.newBuilder()
+                        .setInstanceId(instanceId)
+                        .setEndpoint(endpoint)
                         .build())
                 .build();
-        if (!sendOrEnqueue(msg, "InstanceChannelStatus", srcActorId + "->" + dstActorId)) {
-            log.debug("SignalingChannel 未就绪，InstanceChannelStatus 已入队: src={}, dst={}", srcActorId, dstActorId);
+        if (!sendOrEnqueue(msg, "InstanceEndpointReport", instanceId)) {
+            log.debug("SignalingChannel 未就绪，InstanceEndpointReport 已入队: instanceId={}", instanceId);
         }
     }
 
     /**
-     * 若 channel 已建立则立即发送，否则入队。
-     * @return true 表示已发送，false 表示已入队
+     * 上报容器级实例状态变更（通道未就绪时入队，重连后重放）。
      */
+    public void reportInstanceStatusChanged(String instanceId,
+                                           InstanceStatus previous,
+                                           InstanceStatus current,
+                                           String message) {
+        SignalingEnvelope msg = SignalingEnvelope.newBuilder()
+                .setTimestampMs(System.currentTimeMillis())
+                .setInstanceStatusChanged(InstanceStatusChanged.newBuilder()
+                        .setInstanceId(instanceId != null ? instanceId : "")
+                        .setPreviousStatus(previous != null ? previous : InstanceStatus.INSTANCE_STATUS_UNSPECIFIED)
+                        .setCurrentStatus(current != null ? current : InstanceStatus.INSTANCE_STATUS_UNSPECIFIED)
+                        .setMessage(message != null ? message : "")
+                        .build())
+                .build();
+        if (!sendOrEnqueue(msg, "InstanceStatusChanged", instanceId)) {
+            log.debug("SignalingChannel 未就绪，InstanceStatusChanged 已入队: instanceId={}", instanceId);
+        }
+    }
+
     private boolean sendOrEnqueue(SignalingEnvelope msg, String reportType, String detail) {
         StreamObserver<SignalingEnvelope> sender = this.signalingSender;
         if (sender != null) {

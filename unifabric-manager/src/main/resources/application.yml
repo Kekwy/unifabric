@@ -1,0 +1,26 @@
+unifabric:
+  fabric:
+    grpc:
+      port: 9090
+    node-id: fabric-local
+    domain-id: default
+    advertise-address: "127.0.0.1:9090"
+    node-ttl-minutes: 5
+    gossip:
+      seed-nodes: []
+      interval-seconds: 5
+      fan-out: 1
+      anti-entropy-interval-minutes: 3
+    scheduling:
+      alpha: 0.5
+      backoff-init-seconds: 1
+      backoff-max-seconds: 30
+      max-retries: 10
+      request-ttl-seconds: 300
+      deploy-timeout-seconds: 120
+    connectivity:
+      relay-bind-address: "0.0.0.0"
+      relay-advertise-host: ""
+    connectivity:
+      relay-bind-address: "0.0.0.0"
+      relay-advertise-host: ""

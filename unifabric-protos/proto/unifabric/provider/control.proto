@@ -1,66 +1,58 @@
 syntax = "proto3";
 
-package iarnet.provider;
+package unifabric.provider;
+
+import "unifabric/common/resource.proto";
 
 option java_package = "com.kekwy.unifabric.proto.provider";
 option java_multiple_files = true;
 
+// 控制通道信封：仅承载心跳与资源容量上报（注册走独立一元 RPC）
 message ControlEnvelope {
   string message_id = 1;
   string correlation_id = 2;
+  string error = 7;
 
   oneof message {
-    RegisterProviderRequest register_provider_request = 3;
-    RegisterProviderResponse register_provider_response = 4;
     ProviderHeartbeat provider_heartbeat = 5;
     ProviderHeartbeatAck provider_heartbeat_ack = 6;
+    ResourceCapacityReport resource_capacity_report = 8;
+    ResourceCapacityReportAck resource_capacity_report_ack = 9;
   }
-  
-  string error = 7;
 }
 
-// ======================== 设备注册与心跳 ========================
+// ======================== 一元注册（由 ProviderRegistryService.RegisterProvider 使用） ========================
 
 message RegisterProviderRequest {
-  // 设备名称（可读性标识，例如 hostname 或自定义别名）
   string provider_name = 1;
-
-  // 提供者类型（例如: ["docker", "k8s", "process"]）
   string provider_type = 2;
-
-  // 提供者描述（可选）
   string description = 3;
-
-  // 提供者标签（例如: ["edge", "gpu", "arm"]）
   repeated string tags = 4;
-
-  // 可选：拓扑/区域信息，例如 "edge-a" / "az-1"
   string zone = 5;
 }
 
 message RegisterProviderResponse {
-  // 注册是否被接受
   bool   accepted  = 1;
-
-  // 控制平面分配的全局唯一 ProviderId（后续所有信令/心跳需携带）
   string provider_id = 2;
-
-  // TODO: 返回当前 server 中的 oss 服务地址，要求 provider 可以访问到。
-
-  // 附加信息（拒绝原因或提示）
   string message   = 3;
 }
 
 message ProviderHeartbeat {
   string provider_id    = 1;
-
-  // 纳秒或毫秒时间戳（由 Provider 填写）
   int64  timestamp_ms = 2;
-
-  // Provider 当前标签快照（可选，便于动态变更标签）
   repeated string tags = 3;
 }
 
 message ProviderHeartbeatAck {
+  bool acknowledged = 1;
+}
+
+message ResourceCapacityReport {
+  string provider_id = 1;
+  int64  timestamp_ms = 2;
+  unifabric.common.ResourceCapacity capacity = 3;
+}
+
+message ResourceCapacityReportAck {
   bool acknowledged = 1;
 }

@@ -1,21 +1,14 @@
 package com.kekwy.unifabric.adapter.deployment;
 
-import com.kekwy.unifabric.adapter.actor.ActorRouter;
 import com.kekwy.unifabric.adapter.artifact.ArtifactFetcher;
 import com.kekwy.unifabric.adapter.config.AdapterIdentity;
-import com.kekwy.unifabric.adapter.engine.ResourceProvider;
-import com.kekwy.unifabric.adapter.registry.DelegatingObserver;
+import com.kekwy.unifabric.adapter.provider.ResourceProvider;
 import com.kekwy.unifabric.adapter.registry.AdapterRegistryClient;
+import com.kekwy.unifabric.adapter.signaling.SignalingService;
+import com.kekwy.unifabric.adapter.registry.DelegatingObserver;
+import com.kekwy.unifabric.adapter.util.ExponentialBackoff;
 import com.kekwy.unifabric.proto.fabric.ProviderRegistryServiceGrpc;
-import com.kekwy.unifabric.proto.provider.DeployInstanceRequest;
-import com.kekwy.unifabric.proto.provider.DeployInstanceResponse;
-import com.kekwy.unifabric.proto.provider.DeploymentEnvelope;
-import com.kekwy.unifabric.proto.provider.GetInstanceStatusRequest;
-import com.kekwy.unifabric.proto.provider.GetInstanceStatusResponse;
-import com.kekwy.unifabric.proto.provider.RemoveInstanceRequest;
-import com.kekwy.unifabric.proto.provider.RemoveInstanceResponse;
-import com.kekwy.unifabric.proto.provider.StopInstanceRequest;
-import com.kekwy.unifabric.proto.provider.StopInstanceResponse;
+import com.kekwy.unifabric.proto.provider.*;
 import io.grpc.Metadata;
 import io.grpc.stub.MetadataUtils;
 import io.grpc.stub.StreamObserver;
@@ -29,41 +22,37 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 管理 DeploymentChannel 生命周期；asyncStub、scheduler 及业务依赖由 Spring 构造注入，
- * providerId 从 {@link AdapterIdentity} 读取。
+ * 管理 DeploymentChannel 生命周期与部署指令执行。
  */
 @Service
 public class DeploymentService {
 
     private static final Logger log = LoggerFactory.getLogger(DeploymentService.class);
-    private static final long RECONNECT_DELAY_SECONDS = 5;
-
     private final ProviderRegistryServiceGrpc.ProviderRegistryServiceStub asyncStub;
     private final ScheduledExecutorService scheduler;
     private final ResourceProvider resourceProvider;
     private final ArtifactFetcher artifactFetcher;
-    private final ActorRouter actorRouter;
     private final AdapterIdentity identity;
+    private final SignalingService signalingService;
 
     private volatile boolean closed = false;
-    /** 当前 Deployment 流发送端，重连前需 onCompleted 关闭，避免多流并存 */
     private volatile StreamObserver<DeploymentEnvelope> deploymentSender;
+    private final ExponentialBackoff reconnectBackoff = new ExponentialBackoff();
 
     public DeploymentService(ProviderRegistryServiceGrpc.ProviderRegistryServiceStub providerRegistryAsyncStub,
                              ScheduledExecutorService adapterScheduler,
                              ResourceProvider resourceProvider,
                              ArtifactFetcher artifactFetcher,
-                             ActorRouter actorRouter,
-                             AdapterIdentity identity) {
+                             AdapterIdentity identity,
+                             SignalingService signalingService) {
         this.asyncStub = providerRegistryAsyncStub;
         this.scheduler = adapterScheduler;
         this.resourceProvider = resourceProvider;
         this.artifactFetcher = artifactFetcher;
-        this.actorRouter = actorRouter;
         this.identity = identity;
+        this.signalingService = signalingService;
     }
 
-    /** 建立 Deployment 流（providerId 从 AdapterIdentity 读取，重连时同样）。重连前先关闭旧流，避免多流并存。 */
     public void openChannel() {
         String providerId = identity != null ? identity.getProviderId() : null;
         if (closed || asyncStub == null || providerId == null) return;
@@ -76,8 +65,8 @@ public class DeploymentService {
 
         DelegatingObserver<DeploymentEnvelope> proxy = new DelegatingObserver<>();
         final StreamObserver<DeploymentEnvelope> thisSender = proxy;
-        StreamObserver<DeploymentEnvelope> receiver = new DeploymentMessageDispatcher(this, proxy,
-                () -> onDisconnect(thisSender));
+        StreamObserver<DeploymentEnvelope> receiver = new DeploymentMessageDispatcher(
+                this, signalingService, proxy, () -> onDisconnect(thisSender));
 
         Metadata headers = new Metadata();
         headers.put(AdapterRegistryClient.PROVIDER_ID_METADATA_KEY, providerId);
@@ -86,6 +75,7 @@ public class DeploymentService {
         StreamObserver<DeploymentEnvelope> sender = headerStub.deploymentChannel(receiver);
         proxy.setDelegate(sender);
         this.deploymentSender = proxy;
+        reconnectBackoff.reset();
 
         log.info("DeploymentChannel 已建立: providerId={}", providerId);
     }
@@ -97,29 +87,24 @@ public class DeploymentService {
         }
         this.deploymentSender = null;
         if (closed) return;
-        log.warn("DeploymentChannel 断开，{}s 后重连...", RECONNECT_DELAY_SECONDS);
+        long delayMs = reconnectBackoff.nextDelayMs();
+        log.warn("DeploymentChannel 断开，{}ms 后重连（指数退避）...", delayMs);
         scheduler.schedule(() -> {
             try { disconnectedSender.onCompleted(); } catch (Exception e) { log.trace("关闭旧流: {}", e.getMessage()); }
             openChannel();
-        }, RECONNECT_DELAY_SECONDS, TimeUnit.SECONDS);
+        }, delayMs, TimeUnit.MILLISECONDS);
     }
 
     public void close() {
         closed = true;
     }
 
-    // --- 业务方法，供 DeploymentMessageDispatcher 委托调用 ---
-
-    @SuppressWarnings("ConstantValue")
     public DeployInstanceResponse deployInstance(DeployInstanceRequest request) throws IOException {
         Path artifactPath = null;
         String artifactUrl = request.getArtifactUrl();
         if (artifactUrl != null && !artifactUrl.isBlank()) {
             artifactPath = artifactFetcher.fetch(request.getInstanceId(), artifactUrl);
         }
-        String instanceId = request.getInstanceId();
-        actorRouter.registerActorRouting(instanceId, request.getInstanceIndex(),
-                request.getUpstreamInstanceAddrsList(), request.getDownstreamGroupsList());
         return resourceProvider.deployInstance(request, artifactPath);
     }
 
@@ -133,5 +118,13 @@ public class DeploymentService {
 
     public GetInstanceStatusResponse getInstanceStatus(GetInstanceStatusRequest request) {
         return resourceProvider.getInstanceStatus(request.getInstanceId());
+    }
+
+    /** 供部署后补报端点：若响应中未带 {@link com.kekwy.unifabric.proto.provider.InstanceEndpoint} 再尝试解析 */
+    public com.kekwy.unifabric.proto.provider.InstanceEndpoint tryGetInstanceEndpoint(String instanceId) {
+        if (instanceId == null || instanceId.isBlank()) {
+            return null;
+        }
+        return resourceProvider.getInstanceEndpoint(instanceId);
     }
 }

@@ -1,7 +1,9 @@
 package com.kekwy.unifabric.fabric.provider;
 
+import com.kekwy.unifabric.proto.provider.ControlEnvelope;
 import com.kekwy.unifabric.proto.provider.DeploymentEnvelope;
 import com.kekwy.unifabric.proto.provider.RegisterProviderRequest;
+import com.kekwy.unifabric.proto.provider.SignalingEnvelope;
 import io.grpc.stub.StreamObserver;
 
 import java.util.List;
@@ -28,6 +30,28 @@ public interface ProviderRegistry {
      * 处理心跳，更新最后活跃时间。
      */
     void heartbeat(String providerId);
+
+    /**
+     * 由心跳携带的标签快照更新 Provider 标签（论文 3.2.3）。
+     */
+    void updateTags(String providerId, List<String> tags);
+
+    /**
+     * 处理资源容量上报（控制通道 {@link com.kekwy.unifabric.proto.provider.ResourceCapacityReport}）。
+     */
+    void updateResourceCapacity(String providerId, com.kekwy.unifabric.proto.common.ResourceCapacity capacity);
+
+    // ======================== ControlChannel ========================
+
+    void openControlChannel(String providerId, StreamObserver<ControlEnvelope> controlSender);
+
+    void closeControlChannel(String providerId, StreamObserver<ControlEnvelope> senderThatClosed);
+
+    // ======================== SignalingChannel ========================
+
+    void openSignalingChannel(String providerId, StreamObserver<SignalingEnvelope> signalingSender);
+
+    void closeSignalingChannel(String providerId, StreamObserver<SignalingEnvelope> senderThatClosed);
 
     // ======================== DeploymentChannel ========================
 

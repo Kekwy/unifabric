@@ -6,3 +6,7 @@ workspaces/**
 **/data
 **/.m2repo
 .draft
+
+tex/
+**/*.tex
+**/*.pdf
